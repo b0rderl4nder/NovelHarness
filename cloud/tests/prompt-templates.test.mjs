@@ -44,29 +44,43 @@ test('template expansion is one-pass, literal, bounded and reports unknown field
   assert.throws(() => compileTemplate('{title}', { title: '中'.repeat(45000) }), /128 KiB/);
 });
 
-test('editable prose default distinguishes manuscript development from compact chat without paragraph quotas or overriding author style', () => {
-  const template = prepareTemplate({ key: 'write', book, mode: 'write' });
-  assert.equal(template.source, 'default');
-  for (const text of [
-    '小说正文',
-    '落实章纲中的事件和变化',
-    '连贯展开的场景',
-    '段落随语意与说话人变化',
-    '局部修改不扩成整章',
-    '字数只作下限',
-    '叙述清楚具体',
-    '含混隐喻',
-    '未定细节可以创作，不改已定事实',
-  ])
-    assert(template.body.includes(text), text);
-  const custom = '只写两句，保持纯对白。';
-  assert.equal(
-    prepareTemplate({ key: 'write', book, rulesText: JSON.stringify({ savedPrompts: { write: custom } }) })
-      .body,
-    custom,
-  );
-  assert(!LEGACY_DEFAULT_PROMPTS.deai.includes('完整场景'));
-  assert(!LEGACY_DEFAULT_PROMPTS.outline.includes('语意完整的段落'));
+test('default prose retains the chapter bindings and uses the author-selected story guidance', () => {
+  const guidance =
+    '**先写好完整的故事，再安排少数重点内容。** 用大部分篇幅搭好故事的前因后果、氛围和节奏，让指定的主题、桥段或卖点在合适的位置自然出现。到了关键处集中笔墨写足，其余部分按故事本身的需要展开。即使本次只强调某一个看点，也保留铺垫、过渡和余波各自的作用。';
+  const rulesText = JSON.stringify({
+    project: { genre: '悬疑', novelNote: '保留回声线索', wordsPerChapter: 1600 },
+  });
+  const outline = {
+    chapter: 3,
+    title: '账簿',
+    summary: '比对船票',
+    plotPoints: ['取得账簿'],
+    note: '不揭密',
+  };
+  for (const [mode, scope] of [
+    ['write', '按本次要求写作'],
+    ['continue', '只追加新增续文，不重复旧正文'],
+    ['rewrite', '只改本次冻结范围'],
+  ]) {
+    const template = prepareTemplate({ key: 'write', book, mode, rulesText, outline });
+    assert.equal(template.source, 'default');
+    assert.deepEqual(template.unknownFields, []);
+    assert.equal(
+      template.body,
+      [
+        '作品：钟楼｜悬疑',
+        '第 3 章：账簿',
+        '章纲：比对船票',
+        '剧情点：["取得账簿"]',
+        '章内要求：不揭密',
+        '全书备注：保留回声线索',
+        '最低字数与范围：至少 1600 字，不设上限；' + scope,
+        '',
+        guidance,
+      ].join('\n'),
+    );
+    assert(!Object.hasOwn(template, 'executionPrompt'));
+  }
 });
 test('author overrides take precedence, empty overrides fall back, and task-specific bindings use known facts plus native references', () => {
   const input = {
@@ -129,29 +143,17 @@ test('unconfigured bindings are concise data labels, not hidden full-chapter or 
   prepareTemplate({ ...input, rulesText });
   assert.deepEqual(configured, frozen);
 });
-test('dialogue guidance belongs to the selected editable template for drafting, continuation and revision, not an extra prompt source', () => {
-  for (const mode of ['write', 'continue', 'rewrite']) {
-    const t = prepareTemplate({ key: 'write', book, mode });
-    for (const text of [
-      '彼此的回应推动事情发展',
-      '人物所知、指代、数量和物件状态一致',
-      '人物为了眼前的事交谈、行动',
-      '段落随语意与说话人变化',
-      '不逐句解释对白',
-      '只交付正文',
-      '不改已定事实',
-    ])
-      assert(t.body.includes(text), mode + ': ' + text);
-    assert.equal(t.source, 'default');
-    assert.deepEqual(t.unknownFields, []);
-    assert(!Object.hasOwn(t, 'executionPrompt'));
-  }
+test('polish and ending use their own task guidance', () => {
   const polish = prepareTemplate({ key: 'deai', book });
-  for (const text of ['指代、因果、应答与动作衔接', '可重组句段', '不把润色变成梗概'])
+  for (const text of [
+    '指代、因果、应答与动作衔接',
+    '可重组句段',
+    '不把润色变成梗概',
+    '宣读人设',
+    '不逐句解释台词',
+  ])
     assert(polish.body.includes(text), text);
   assert(prepareTemplate({ key: 'ending', book }).body.includes('不强制悬念或突然反转人物立场'));
-  // These are template-wiring assertions, not an automated literary judgement.
-  // No blacklisted snippet, minimum sentence length or semantic regex gate.
 });
 test('quality default changes never append hidden guidance to author overrides or mutate frozen tasks', () => {
   for (const key of ['write', 'deai', 'ending']) {
@@ -164,28 +166,8 @@ test('quality default changes never append hidden guidance to author overrides o
     assert.deepEqual(JSON.parse(templateContext({ promptTemplate: frozen.template })), frozen);
   }
 });
-test('clarity guidance does not turn character cards into dialogue or require action tags after each line', () => {
-  for (const key of ['write', 'deai']) {
-    const t = prepareTemplate({ key, book });
-    assert(t.body.includes(key === 'write' ? '不宣读人设' : '宣读人设'));
-    assert(t.body.includes(key === 'write' ? '不逐句解释对白' : '不逐句解释台词'));
-  }
-  const prose = prepareTemplate({ key: 'write', book });
-  for (const text of [
-    '落实章纲中的事件和变化',
-    '关系和性格从相处中显现',
-    '未定细节可以创作',
-    '保留必要的心理',
-    '数量和物件状态一致',
-  ])
-    assert(prose.body.includes(text), text);
-  assert(prepareTemplate({ key: 'deai', book }).body.includes('可重组句段'));
-});
 test('prose guidance does not impose a duplicate-submission workflow, checklist, or approval gate', () => {
   const t = prepareTemplate({ key: 'write', book });
-  assert(t.body.includes('保持人物所知、指代、数量和物件状态一致'));
-  assert(t.body.includes('novel_proposal_submit 保存入书'));
-  assert(t.body.includes('不因超出目标停写或征询'));
   for (const s of ['complete:false', 'complete:true', '先用 novel_proposal_submit', '等待作者批准'])
     assert(!t.body.includes(s), s);
   assert(!t.body.includes('行文质地示例'));
@@ -200,8 +182,6 @@ test('chapter length is a minimum, never an upper-bound approval or compression 
     rulesText: JSON.stringify({ project: { wordsPerChapter: 1600 } }),
   });
   assert(t.body.includes('至少 1600 字，不设上限'));
-  assert(t.body.includes('字数只作下限'));
-  assert(t.body.includes('不因超出目标停写或征询'));
   assert(LEGACY_DEFAULT_PROMPTS.ending.includes('不设上限'));
   assert(LEGACY_DEFAULT_PROMPTS.deai.includes('不以压缩字数为目标'));
   assert(LEGACY_DEFAULT_PROMPTS.outline.includes('ask_user_question'));

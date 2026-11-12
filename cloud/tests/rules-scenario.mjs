@@ -57,9 +57,8 @@ export async function verifyRulesEditor({ page, context, origin, api, root }) {
     await page.waitForFunction(() =>
       document.querySelector('textarea[aria-label="提示词 write"]')?.value.includes('{chapterNumber}'),
     );
-    assert((await prompt.inputValue()).includes('按作者要求写小说正文'));
-    assert((await prompt.inputValue()).includes('彼此的回应推动事情发展'));
-    assert((await prompt.inputValue()).includes('关系和性格从相处中显现，不宣读人设'));
+    assert((await prompt.inputValue()).includes('先写好完整的故事，再安排少数重点内容。'));
+    assert((await prompt.inputValue()).includes('也保留铺垫、过渡和余波各自的作用。'));
     const defaults = await (await client.get(origin + '/api/novel-prompt-templates')).json();
     assert.equal(await prompt.inputValue(), defaults.defaults.write);
     assert(defaults.defaults.deai.includes('指代、因果、应答与动作衔接'));

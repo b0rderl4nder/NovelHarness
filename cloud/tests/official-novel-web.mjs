@@ -280,25 +280,25 @@ try {
   await composer.press('Enter');
   await page.getByText(task.finalText, { exact: true }).waitFor({ timeout: 30000 });
   assert.equal(task.completedSteps, task.steps.length);
-  assert(
-    task.bodies.some((body) => JSON.stringify(body.messages).includes('按作者要求写小说正文')),
-    'Editable prose template did not reach the actual model HTTP request after prepare.',
-  );
   for (const text of [
-    '彼此的回应推动事情发展',
-    '段落随语意与说话人变化',
-    '关系和性格从相处中显现，不宣读人设',
+    '先写好完整的故事，再安排少数重点内容。',
+    '让指定的主题、桥段或卖点在合适的位置自然出现',
+    '也保留铺垫、过渡和余波各自的作用。',
   ])
     assert(
       task.bodies.some((body) => JSON.stringify(body.messages).includes(text)),
-      'Dialogue guidance did not reach the actual native provider request: ' + text,
+      'Story guidance did not reach the actual native provider request: ' + text,
     );
   assert(
     task.bodies.every((body) => JSON.stringify(body.tools).includes('读取并应用 task.template')),
     'Native tool schema lost its template-consumption contract.',
   );
   report.proseTemplateReachedActualProvider = true;
-  assert(task.bodies.some((body) => JSON.stringify(body.messages).includes('字数只作下限')));
+  assert(
+    task.bodies.some((body) =>
+      /最低字数与范围：(?:至少 \d+ 字，不设上限|充分展开，不设字数上限)/.test(JSON.stringify(body.messages)),
+    ),
+  );
   report.minimumLengthTemplateReachedProvider = true;
   report.nativeDraftCharacterCountAndFreshHash = true;
   assert(

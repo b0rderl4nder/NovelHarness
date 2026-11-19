@@ -11,6 +11,7 @@ import { verifyUiRelease } from '../scripts/verify-ui-release.mjs';
 import { makeBookBundle } from '../pages/public/novel-assets/bundle.mjs';
 import { makeWorkspaceClient } from '../pages/public/novel-assets/workspace.mjs';
 import {
+  openBookSection,
   openChapter,
   openChapterDirectory,
   openDocumentOptions,
@@ -213,7 +214,7 @@ try {
   stage = 'mobile-outline-delete-clear-recover';
   await page.setViewportSize({ width: 390, height: 844 });
   await waitResponsiveLayout(page);
-  await page.getByRole('button', { name: '大纲', exact: true }).click();
+  await openBookSection(page, '大纲');
   await page.locator('[data-outline-index="0"]').waitFor();
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
   await page.screenshot({ path: resolve('test-results/content-management-mobile-outline.png') });

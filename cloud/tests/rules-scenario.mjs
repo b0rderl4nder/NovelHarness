@@ -1,3 +1,4 @@
+import { openBookSection } from './editor-client.mjs';
 import { newFixtureApi } from './fixture-api.mjs';
 import assert from 'node:assert/strict';
 import { resolve } from 'node:path';
@@ -24,7 +25,7 @@ export async function verifyRulesEditor({ page, context, origin, api, root }) {
       ).status(),
       200,
     );
-    await page.getByRole('button', { name: '提示词', exact: true }).click();
+    await openBookSection(page, '提示词');
     const editor = page.getByLabel('提示词编辑器', { exact: true });
     await editor.waitFor();
     for (const name of ['风格与禁忌', '人称与角色视角', '参考风格与手法'])
@@ -68,7 +69,7 @@ export async function verifyRulesEditor({ page, context, origin, api, root }) {
     await page.locator('.novel-ms-status').filter({ hasText: '已保存' }).waitFor();
     assert(!Object.hasOwn(JSON.parse((await read()).text.replace(/^\uFEFF/, '')).savedPrompts, 'write'));
     await page.reload();
-    await page.getByRole('button', { name: '提示词', exact: true }).click();
+    await openBookSection(page, '提示词');
     await prompt.waitFor();
     assert((await prompt.inputValue()).includes('{chapterNumber}'));
     for (const width of [1280, 768, 390]) {

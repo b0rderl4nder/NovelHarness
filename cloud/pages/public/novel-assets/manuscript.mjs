@@ -42,6 +42,14 @@ import {
 } from './proposal-navigation.mjs';
 const TYPE = 'novel-manuscript',
   ADDRESS = MANUSCRIPT_ADDRESS;
+const chapterPositionKey = (bookId) => 'novel-chapter-position:' + bookId;
+function readChapterPosition(bookId) {
+  try {
+    return JSON.parse(localStorage.getItem(chapterPositionKey(bookId)));
+  } catch {
+    return null;
+  }
+}
 export function installManuscript(ctx, React, { navigation: appNavigation, createPortal } = {}) {
   const h = React.createElement,
     { useState, useEffect, useRef } = React;
@@ -140,7 +148,9 @@ export function installManuscript(ctx, React, { navigation: appNavigation, creat
       [text, setText] = useState('');
     const [message, setMessage] = useState('正在读取书稿…'),
       [busy, setBusy] = useState(false),
-      [panel, setPanel] = useState('chapter');
+      [view, setPanel] = useState('chapter');
+    const chapterOutline = view === 'chapter-outline';
+    const panel = chapterOutline ? 'outline' : view;
     const [review, setReviewState] = useState(null),
       [history, setHistory] = useState(null),
       [conflict, setConflict] = useState(null);
@@ -156,11 +166,12 @@ export function installManuscript(ctx, React, { navigation: appNavigation, creat
     const [chapterDirectory, setChapterDirectory] = useState(false);
     const [management, setManagement] = useState(null);
     const documentOptionsId = React.useId();
+    const workspaceMenuId = React.useId();
     useEffect(() => {
       setDocumentOptions(false);
       setChapterDirectory(false);
       setManagement(null);
-    }, [id, document?.path, panel]);
+    }, [id, document?.path, view]);
     const [order, setOrder] = useState(null);
     const [activeRunId, setActiveRunId] = useState(null);
     const [showImportRecords, setShowImportRecords] = useState(false);
@@ -190,6 +201,16 @@ export function installManuscript(ctx, React, { navigation: appNavigation, creat
       handledNavigation = useRef(null),
       latestNavigation = useRef(navigation),
       state = useRef({});
+    const chapterPosition = useRef(null);
+    function rememberChapter(path, position) {
+      if (!embedded) return;
+      chapterPosition.current = { path, position };
+      try {
+        localStorage.setItem(chapterPositionKey(id), JSON.stringify(chapterPosition.current));
+      } catch {
+        // Local preferences must not block document access.
+      }
+    }
     const operation = useRef(false),
       reviewFetch = useRef(0),
       reviewEpoch = useRef(0),
@@ -509,8 +530,11 @@ export function installManuscript(ctx, React, { navigation: appNavigation, creat
         if (serial !== selectionRequest.current) return;
         selected.current = path;
         setShowImportRecords(false);
-        if (path.startsWith('chapters/')) lastChapter.current = path;
-        else if (
+        if (path.startsWith('chapters/')) {
+          lastChapter.current = path;
+          const previous = chapterPosition.current ?? readChapterPosition(id);
+          rememberChapter(path, previous?.path === path ? previous.position : null);
+        } else if (
           !['outline.json', 'rules.json', DIRECTION_PATH].includes(path) &&
           !path.startsWith('drafts/')
         )
@@ -582,7 +606,7 @@ export function installManuscript(ctx, React, { navigation: appNavigation, creat
         if (serial !== selectionRequest.current || operation.current) return;
         let path;
         if (key === 'prompts') path = 'rules.json';
-        else if (key === 'outline') {
+        else if (key === 'outline' || key === 'chapter-outline') {
           if (listing.documents.some((item) => item.path === 'outline.json')) path = 'outline.json';
         } else if (!['run', 'proposals'].includes(key)) {
           const category = key === 'chapter' ? 'chapter' : 'reference';
@@ -615,6 +639,7 @@ export function installManuscript(ctx, React, { navigation: appNavigation, creat
         if (path && !(await select(path, false, serial))) return;
         if (serial !== selectionRequest.current) return;
         setPanel(key);
+        setDocumentOptions(false);
         setShowImportRecords(false);
         setReview(null);
         closeHistory();
@@ -629,7 +654,7 @@ export function installManuscript(ctx, React, { navigation: appNavigation, creat
           selected.current = null;
           setDocument(null);
           setText('');
-          if (key === 'outline')
+          if (key === 'outline' || key === 'chapter-outline')
             setMessage(
               listing.outlineParts?.length
                 ? '导入大纲为长文分片，尚未支持聚合编辑；原分片保留，可在原生文件工具中查看。'
@@ -1277,7 +1302,13 @@ export function installManuscript(ctx, React, { navigation: appNavigation, creat
       loadList()
         .then((result) => {
           if (!alive || selected.current || selectionRequest.current !== initialSelection) return;
+          const rememberedChapter = embedded ? readChapterPosition(id)?.path : null;
           const first =
+            (rememberedChapter
+              ? result.documents.find(
+                  (item) => item.category === 'chapter' && item.path === rememberedChapter,
+                )
+              : null) ??
             result.documents.find((item) => item.category === 'chapter') ??
             result.documents.find((item) => item.category === 'draft' && !item.managed) ??
             (embedded ? result.documents.find((item) => item.path === 'outline.json') : null) ??
@@ -1462,6 +1493,7 @@ export function installManuscript(ctx, React, { navigation: appNavigation, creat
         'data-book-id': id,
         'data-session-id': sessionId,
         'data-outline-hash': document?.outlineHash ?? '',
+        'data-view': view,
       },
       renderHeading(
         h(
@@ -1514,41 +1546,79 @@ export function installManuscript(ctx, React, { navigation: appNavigation, creat
       h(
         'nav',
         { className: 'novel-ms-tabs', 'aria-label': '书稿区域', 'aria-busy': !!opening },
-        ...[
-          ['chapter', '正文'],
-          ['outline', '大纲'],
-          ['run', '连写'],
-          ['reference', '设定'],
-          ['prompts', '提示词'],
-        ].map(([key, label]) =>
+        ...(embedded
+          ? [
+              ['chapter', '正文'],
+              ['chapter-outline', '本章章纲'],
+            ]
+          : [
+              ['chapter', '正文'],
+              ['outline', '大纲'],
+              ['run', '连写'],
+              ['reference', '设定'],
+              ['prompts', '提示词'],
+            ]
+        ).map(([key, label]) =>
           h(
             'button',
             {
               key,
               type: 'button',
-              disabled: busy || !listing,
-              'aria-pressed': panel === key,
+              disabled:
+                busy ||
+                !listing ||
+                (key === 'chapter-outline' &&
+                  (!lastChapter.current || (panel === 'chapter' && document?.path !== lastChapter.current))),
+              'aria-pressed': view === key,
               onClick: () => browsePanel(key),
             },
             label,
           ),
         ),
-        showDocumentTools
+        embedded || showDocumentTools
           ? h(
               'button',
               {
                 type: 'button',
                 className: 'novel-ms-options-toggle',
-                disabled: busy,
+                disabled: busy || !listing,
                 'aria-label': '文稿选项',
                 'aria-expanded': documentOptions,
-                'aria-controls': documentOptions ? documentOptionsId : undefined,
+                'aria-controls': documentOptions
+                  ? embedded
+                    ? workspaceMenuId
+                    : documentOptionsId
+                  : undefined,
                 onClick: () => setDocumentOptions(!documentOptions),
               },
               '更多',
             )
           : null,
       ),
+      embedded && documentOptions
+        ? h(
+            'nav',
+            { id: workspaceMenuId, className: 'novel-workspace-more', 'aria-label': '书稿功能' },
+            ...[
+              ['outline', '大纲'],
+              ['run', '连写'],
+              ['reference', '设定'],
+              ['prompts', '提示词'],
+            ].map(([key, label]) =>
+              h(
+                'button',
+                {
+                  key,
+                  type: 'button',
+                  disabled: busy,
+                  'aria-pressed': view === key,
+                  onClick: () => browsePanel(key),
+                },
+                label,
+              ),
+            ),
+          )
+        : null,
       h(
         'div',
         { className: 'novel-workspace-status' },
@@ -1958,7 +2028,7 @@ export function installManuscript(ctx, React, { navigation: appNavigation, creat
                       : h(
                           React.Fragment,
                           null,
-                          panel === 'outline'
+                          panel === 'outline' && !chapterOutline
                             ? document?.path === DIRECTION_PATH || document?.path.startsWith('drafts/')
                               ? h(
                                   'button',
@@ -1970,16 +2040,19 @@ export function installManuscript(ctx, React, { navigation: appNavigation, creat
                                   '返回章节大纲',
                                 )
                               : null
-                            : panel === 'chapter'
+                            : panel === 'chapter' || chapterOutline
                               ? h(ChapterNavigation, {
                                   documents: listing.documents,
-                                  path: document?.path,
+                                  path: chapterOutline ? lastChapter.current : document?.path,
                                   disabled: busy || !!opening,
                                   warning: listing.navigationWarning,
                                   outlineCount: listing.outlineChapterCount,
                                   onReorder: () => perform(beginChapterOrder),
-                                  onSelect: (path) => perform(() => select(path)),
-                                  onAdd: () => setAdding(!adding),
+                                  onSelect: (path) =>
+                                    perform(async () => {
+                                      if ((await select(path)) && chapterOutline) setPanel('chapter');
+                                    }),
+                                  onAdd: chapterOutline ? undefined : () => setAdding(!adding),
                                   onRecovery: () => manage('list'),
                                   onRename: document?.path.startsWith('chapters/')
                                     ? () => {
@@ -2162,7 +2235,10 @@ export function installManuscript(ctx, React, { navigation: appNavigation, creat
                                           : null,
                                       )
                                     : null,
-                                  panel === 'chapter' && !candidate && document.path.startsWith('chapters/')
+                                  panel === 'chapter' &&
+                                    (!embedded || documentOptions) &&
+                                    !candidate &&
+                                    document.path.startsWith('chapters/')
                                     ? h(ChapterFocus, {
                                         key: 'chapter-focus:' + document.path,
                                         document,
@@ -2379,6 +2455,8 @@ export function installManuscript(ctx, React, { navigation: appNavigation, creat
                                         api,
                                         documents: listing.documents,
                                         bindings: document.bindings,
+                                        focusPath: chapterOutline ? lastChapter.current : null,
+                                        onFullOutline: chapterOutline ? () => browsePanel('outline') : null,
                                         onOpenChapter: (chapter) =>
                                           perform(() => openOutlineChapter(chapter)),
                                         onEditDirection: () => perform(editDirection),
@@ -2418,6 +2496,17 @@ export function installManuscript(ctx, React, { navigation: appNavigation, creat
                                           h(ProseEditor, {
                                             key: document.path + ':' + !!(candidate && !candidate.editable),
                                             value: text,
+                                            initialPosition:
+                                              embedded && chapterPosition.current?.path === document.path
+                                                ? chapterPosition.current.position
+                                                : null,
+                                            onPosition:
+                                              embedded && document.path.startsWith('chapters/')
+                                                ? (position) => {
+                                                    if (lastChapter.current === document.path)
+                                                      rememberChapter(document.path, position);
+                                                  }
+                                                : null,
                                             illustrationApi: document.path.startsWith('chapters/')
                                               ? api
                                               : null,
@@ -2480,19 +2569,27 @@ export function installManuscript(ctx, React, { navigation: appNavigation, creat
                                     { role: opening ? 'status' : undefined },
                                     opening
                                       ? '正在打开文稿…'
-                                      : panel === 'outline'
-                                        ? '暂不能打开大纲'
-                                        : '先写一小段',
+                                      : chapterOutline
+                                        ? '本章还没有章纲'
+                                        : panel === 'outline'
+                                          ? '暂不能打开大纲'
+                                          : '先写一小段',
                                   ),
-                                  opening
-                                    ? null
-                                    : h(
-                                        'p',
-                                        null,
-                                        panel === 'outline'
-                                          ? '原文件与分片保留；不会用空大纲覆盖它们。'
-                                          : '保留你的零碎灵感，让故事从一个具体场景开始。',
-                                      ),
+                                  !opening && chapterOutline
+                                    ? h(
+                                        'button',
+                                        { type: 'button', onClick: () => browsePanel('outline') },
+                                        '打开全书大纲',
+                                      )
+                                    : opening
+                                      ? null
+                                      : h(
+                                          'p',
+                                          null,
+                                          panel === 'outline'
+                                            ? '原文件与分片保留；不会用空大纲覆盖它们。'
+                                            : '保留你的零碎灵感，让故事从一个具体场景开始。',
+                                        ),
                                 ),
                         ),
           ),

@@ -689,6 +689,17 @@ html[data-novel-visible-viewport] .novel-author-input [data-question-key] > sect
   padding: 2px 24px;
   border-bottom: 1px solid var(--studio-line);
 }
+.novel-workspace-more {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px 16px;
+  border-bottom: 1px solid var(--studio-line);
+}
+.novel-ms-tabs .novel-ms-options-toggle {
+  margin-inline-start: auto;
+}
 .novel-workspace-messages {
   display: flex;
   flex-wrap: wrap;

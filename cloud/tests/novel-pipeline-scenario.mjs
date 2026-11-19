@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { resolve } from 'node:path';
 import { createGuidedBook } from './novel-studio-scenario.mjs';
-import { waitEditor, openChapterDirectory, clickSidebarEntry } from './editor-client.mjs';
+import { openBookSection, waitEditor, openChapterDirectory, clickSidebarEntry } from './editor-client.mjs';
 
 // Actual original conversation -> scoped native tools -> the SAME formal VFS
 // and left manuscript. Local synthetic provider only; no paid quality claim.
@@ -184,7 +184,7 @@ export async function verifyNovelPipeline({ page, context, origin, model, waitFo
     'Reopening the book observes the original held call.',
   );
   // Browsing and resizing cannot stop the original stream or fork its composer.
-  await page.getByRole('button', { name: '设定', exact: true }).click();
+  await openBookSection(page, '设定');
   assert.equal(task.holds.at(-1).closed, false);
   await page.getByRole('button', { name: '正文', exact: true }).click();
   model.release(task);

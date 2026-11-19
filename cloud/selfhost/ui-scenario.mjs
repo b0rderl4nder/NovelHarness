@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { expect } from '@playwright/test';
 import { verifyIllustrationUi } from './illustration-ui-scenario.mjs';
 import {
+  openBookSection,
   openChapter,
   waitEditor,
   fillEditor,
@@ -119,6 +120,42 @@ export async function verifyWritingUi({ page, context, origin, book, prose }) {
   await openChapter(page, 'chapters/00001.md');
   const editor = page.getByRole('textbox', { name: '书稿正文', exact: true });
   await waitEditor(editor, prose);
+  const localOutline = page.getByRole('button', { name: '本章章纲', exact: true });
+  const outlineRegion = page.getByRole('region', { name: '本章章纲', exact: true });
+  const returnToProse = page.getByRole('button', { name: '正文', exact: true });
+  await localOutline.click();
+  await expect(outlineRegion.locator('.novel-outline-chapter')).toHaveCount(1);
+  await expect(outlineRegion).toContainText('林遥在渡口收到一封来信');
+  await shot('chapter-workspace-outline-1280');
+  await outlineRegion.getByRole('button', { name: '编辑章纲', exact: true }).click();
+  await outlineRegion.getByRole('textbox', { name: '大纲概要', exact: true }).fill('来信约她去旧茶馆。');
+  await page.getByRole('button', { name: '保存大纲', exact: true }).click();
+  await expect(page.locator('.novel-ms-status')).toContainText('已保存');
+  await returnToProse.click();
+  await waitEditor(editor, prose);
+  await openChapter(page, 'chapters/00002.md');
+  await expect(editor).toContainText('夜风吹过空荡的渡口');
+  const scroll = page.locator('.novel-ms-body .cm-scroller');
+  await scroll.evaluate((node) => {
+    node.scrollTop = 390;
+  });
+  await expect
+    .poll(() =>
+      page.evaluate(
+        (id) => JSON.parse(localStorage.getItem('novel-chapter-position:' + id))?.position?.scrollTop,
+        book.id,
+      ),
+    )
+    .toBeGreaterThan(200);
+  await localOutline.click();
+  await expect(outlineRegion).toContainText('林遥回到渡口。');
+  await returnToProse.click();
+  await expect.poll(() => scroll.evaluate((node) => node.scrollTop)).toBeGreaterThan(200);
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await expect(editor).toContainText('夜风吹过空荡的渡口');
+  await expect.poll(() => scroll.evaluate((node) => node.scrollTop)).toBeGreaterThan(200);
+  await openChapter(page, 'chapters/00001.md');
+  await waitEditor(editor, prose);
   await verifyIllustrationUi({ page, context, origin, book, editor, prose });
   const changed = prose + '\n\n她将回信收好，起身去开门。';
   await fillEditor(editor, changed);
@@ -139,8 +176,16 @@ export async function verifyWritingUi({ page, context, origin, book, prose }) {
     const box = await editor.boundingBox();
     assert(box && box.width > Math.min(width - 60, 240), 'Writer became too narrow.');
     await shot('manuscript-' + width);
+    if (width === 390) {
+      await localOutline.click();
+      await expect(outlineRegion).toContainText('来信约她去旧茶馆。');
+      await overflow();
+      await shot('chapter-workspace-outline-390');
+      await returnToProse.click();
+      await waitEditor(editor, changed);
+    }
     for (const name of ['大纲', '设定', '提示词']) {
-      await page.getByRole('button', { name, exact: true }).click();
+      await openBookSection(page, name);
       await page.locator('.novel-ms-tabs[aria-busy="false"]').waitFor();
       if (name === '设定')
         assert.equal(

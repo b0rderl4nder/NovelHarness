@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import {
+  openBookSection,
   fillEditor,
   openChapter,
   openChapterDirectory,
@@ -367,7 +368,7 @@ export async function verifyManuscriptSpace({ page, client, api, path, root, wai
   });
   assert.equal(outlineWrite.status(), 200);
   await outlineWrite.dispose();
-  await page.getByRole('button', { name: '大纲', exact: true }).click();
+  await openBookSection(page, '大纲');
   await page.getByRole('button', { name: '编辑章纲', exact: true }).click();
   const summary = page.getByRole('textbox', { name: '大纲概要', exact: true });
   await summary.fill('保存后自动切回完整阅读，不需再点阅读。');

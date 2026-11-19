@@ -27,6 +27,8 @@ export function createProseEditor(React) {
     label = '书稿正文',
     revealLine = null,
     illustrationApi = null,
+    initialPosition = null,
+    onPosition,
   }) {
     const host = React.useRef(null),
       view = React.useRef(null),
@@ -44,7 +46,7 @@ export function createProseEditor(React) {
       illustrations = React.useRef(null),
       insertionPoint = React.useRef(null),
       uploadingNow = React.useRef(false);
-    latest.current = { value, onChange, onSelection, onSave, illustrationApi, hidden, readOnly };
+    latest.current = { value, onChange, onSelection, onSave, illustrationApi, hidden, readOnly, onPosition };
     React.useEffect(() => {
       if (!toolsOpen || !illustrationApi) return;
       let alive = true;
@@ -141,10 +143,30 @@ export function createProseEditor(React) {
     }
     React.useLayoutEffect(() => {
       mounted.current = true;
+      const source = editorValue(latest.current.value);
+      const caret = Number.isSafeInteger(initialPosition?.caret)
+        ? Math.max(0, Math.min(source.length, initialPosition.caret))
+        : 0;
+      let positionTimer;
+      let positionChanged = false;
+      const persistPosition = () => {
+        positionTimer = undefined;
+        if (positionChanged)
+          latest.current.onPosition?.({
+            caret: editor.state.selection.main.head,
+            scrollTop: editor.scrollDOM.scrollTop,
+          });
+      };
+      const queuePosition = () => {
+        if (!latest.current.onPosition) return;
+        positionChanged = true;
+        if (positionTimer === undefined) positionTimer = setTimeout(persistPosition, 250);
+      };
       const editor = new EditorView({
         parent: host.current,
         state: EditorState.create({
-          doc: editorValue(latest.current.value),
+          doc: source,
+          selection: { anchor: caret },
           extensions: [
             ...(illustrationApi
               ? [
@@ -190,6 +212,7 @@ export function createProseEditor(React) {
             }),
             EditorView.updateListener.of((update) => {
               if (applying.current || (!update.docChanged && !update.selectionSet)) return;
+              queuePosition();
               const props = latest.current,
                 normalized = update.state.doc.toString();
               const source = update.docChanged ? editorText(normalized, props.value) : props.value;
@@ -202,6 +225,11 @@ export function createProseEditor(React) {
         }),
       });
       view.current = editor;
+      const restoreFrame = requestAnimationFrame(() => {
+        if (Number.isFinite(initialPosition?.scrollTop))
+          editor.scrollDOM.scrollTop = Math.max(0, initialPosition.scrollTop);
+        editor.scrollDOM.addEventListener('scroll', queuePosition, { passive: true });
+      });
       // Keep the ORIGINAL focused selection visible when keyboard/viewport
       // geometry changes. The editor owns scrolling; no document/selection
       // rewrite, draft copy or independent caret controller.
@@ -225,6 +253,12 @@ export function createProseEditor(React) {
         viewport?.removeEventListener('resize', revealCaret);
         window.removeEventListener('resize', revealCaret);
         if (viewportFrame !== undefined) cancelAnimationFrame(viewportFrame);
+        cancelAnimationFrame(restoreFrame);
+        editor.scrollDOM.removeEventListener('scroll', queuePosition);
+        if (positionTimer !== undefined) {
+          clearTimeout(positionTimer);
+          persistPosition();
+        }
         view.current = null;
         editor.destroy();
       };

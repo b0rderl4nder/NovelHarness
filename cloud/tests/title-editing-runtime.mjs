@@ -12,6 +12,7 @@ import { chromium } from '@playwright/test';
 import { verifyUiRelease } from '../scripts/verify-ui-release.mjs';
 import { verifySidebarLayout } from './sidebar-layout-scenario.mjs';
 import {
+  openBookSection,
   openChapter,
   clickSidebarEntry,
   waitResponsiveLayout,
@@ -146,7 +147,7 @@ try {
   assert.equal((await get('chapters/1.md')).text, '# 夜雨之后\n\n雨停了，她留下钥匙。\n');
   assert.equal(JSON.parse((await get('outline.json')).text)[0].title, '夜雨之后');
   stage = 'outline-title-sync';
-  await page.getByRole('button', { name: '大纲', exact: true }).click();
+  await openBookSection(page, '大纲');
   const row = page.locator('[data-outline-index="0"]');
   await row.getByRole('button', { name: '修改章纲标题', exact: true }).click();
   await row.getByRole('textbox', { name: '章纲标题', exact: true }).fill('钥匙与雨');

@@ -43,6 +43,14 @@ export async function openDocumentOptions(page) {
   if ((await toggle.getAttribute('aria-expanded')) !== 'true') await toggle.click();
   await page.getByRole('region', { name: '文稿选项', exact: true }).waitFor();
 }
+export async function openBookSection(page, name) {
+  const target = page.getByRole('button', { name, exact: true });
+  if (!(await target.isVisible())) {
+    const more = page.getByRole('button', { name: '文稿选项', exact: true });
+    if ((await more.getAttribute('aria-expanded')) !== 'true') await more.click();
+  }
+  await target.click();
+}
 export async function openGenerationRecords(page) {
   await openDocumentOptions(page);
   await page.getByRole('button', { name: '生成记录', exact: true }).click();

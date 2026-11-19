@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
 import {
+  openBookSection,
   fillEditor,
   openChapter,
   openChapterDirectory,
@@ -169,7 +170,7 @@ export async function verifyChapterOrder({ page, context, origin, restoreBookId,
     );
     assert.deepEqual(await listKeys(), [c.path, a.path, b.path, 'outline:3']);
     // Browsing another part of the SAME workbench retains the staged ordering.
-    await page.getByRole('button', { name: '设定', exact: true }).click();
+    await openBookSection(page, '设定');
     await page.getByRole('button', { name: '正文', exact: true }).click();
     assert.deepEqual(await listKeys(), [c.path, a.path, b.path, 'outline:3']);
     await order.getByRole('button', { name: '预览重排', exact: true }).click();
@@ -318,7 +319,7 @@ export async function verifyChapterOrder({ page, context, origin, restoreBookId,
       releasePreparation();
       await page.unroute(route);
     }
-    await page.getByRole('button', { name: '设定', exact: true }).click();
+    await openBookSection(page, '设定');
     await page.getByRole('button', { name: 'AI 记忆', exact: true }).click();
     await page.locator('.novel-order-review > summary').click();
     await page.getByRole('button', { name: '标记已核对（尚未保存）', exact: true }).click();

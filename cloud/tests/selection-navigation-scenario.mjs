@@ -1,3 +1,4 @@
+import { openBookSection } from './editor-client.mjs';
 import assert from 'node:assert/strict';
 import { resolve } from 'node:path';
 import { newFixtureApi } from './fixture-api.mjs';
@@ -25,15 +26,20 @@ export async function verifySelectionNavigation({ page, context, origin, root, w
   assert.ok(session, 'The synthetic book must retain its original conversation.');
   for (const title of ['私密对话标题 · 不应显示在标签页', '修改后的私密对话标题']) {
     const response = await client.post(origin + '/api/session/rename', {
-      data: { type: 'client-request', rpcId: crypto.randomUUID(),
-        payload: { args: { request: { sessionId: session.sessionId, title } } } },
+      data: {
+        type: 'client-request',
+        rpcId: crypto.randomUUID(),
+        payload: { args: { request: { sessionId: session.sessionId, title } } },
+      },
     });
     assert.equal(response.status(), 200);
     const reply = await response.json();
     await response.dispose();
     assert.equal(reply.result.ok, true);
     assert.equal(reply.result.value.title, title, 'Actual conversation metadata is preserved.');
-    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    await page.evaluate(
+      () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
+    );
     assert.equal(await page.title(), '小说工作台');
   }
   const api = origin + '/api/novels/' + id + '/';
@@ -88,33 +94,35 @@ export async function verifySelectionNavigation({ page, context, origin, root, w
     await page.reload({ waitUntil: 'domcontentloaded' });
     await first.ready();
     assert.equal(await page.locator('.novel-ms-body').evaluate((element) => element.inert), true);
-    const prompts = page.getByRole('button', { name: '提示词', exact: true });
     assert.equal(
-      await prompts.isDisabled(),
+      await page.getByRole('button', { name: '文稿选项', exact: true }).isDisabled(),
       false,
       'A held initial read must not disable author navigation.',
     );
-    await prompts.click();
+    await openBookSection(page, '提示词');
     const prompt = page.getByRole('textbox', { name: '提示词 write', exact: true });
     await prompt.waitFor();
     assert.equal(await page.locator('.novel-ms-body').evaluate((element) => element.inert), false);
     await clearHold(first);
-    assert.equal(await prompts.getAttribute('aria-pressed'), 'true');
+    assert.equal(await page.locator('.novel-manuscript').getAttribute('data-view'), 'prompts');
     await prompt.waitFor();
 
     const referenceRead = await holdRead('rules.json');
-    const reference = page.getByRole('button', { name: '设定', exact: true });
-    await reference.click();
+    await openBookSection(page, '设定');
     await referenceRead.ready();
     assert.equal(
       await page.getByRole('button', { name: '创作规则', exact: true, includeHidden: true }).isDisabled(),
       true,
       'Old content controls must not cancel a pending top-level navigation.',
     );
-    assert.equal(await prompts.isDisabled(), false);
+    assert.equal(await page.getByRole('button', { name: '文稿选项', exact: true }).isDisabled(), false);
     await clearHold(referenceRead);
     await waitFor(
-      () => reference.getAttribute('aria-pressed').then((v) => v === 'true'),
+      () =>
+        page
+          .locator('.novel-manuscript')
+          .getAttribute('data-view')
+          .then((v) => v === 'reference'),
       'reference panel committed after valid read',
     );
     await page.getByRole('button', { name: '创作规则', exact: true }).click();
@@ -126,21 +134,24 @@ export async function verifySelectionNavigation({ page, context, origin, root, w
     const local = initial + '\n作者未保存的句子。';
     await fillEditor(editor, local);
     const slow = await holdRead('rules.json');
-    await prompts.click();
+    await openBookSection(page, '提示词');
     await slow.ready();
-    const outline = page.getByRole('button', { name: '大纲', exact: true });
     assert.equal(
-      await outline.isDisabled(),
+      await page.getByRole('button', { name: '文稿选项', exact: true }).isDisabled(),
       false,
       'A held panel read must remain cancellable through normal navigation.',
     );
-    await outline.click();
+    await openBookSection(page, '大纲');
     await waitFor(
-      () => outline.getAttribute('aria-pressed').then((v) => v === 'true'),
+      () =>
+        page
+          .locator('.novel-manuscript')
+          .getAttribute('data-view')
+          .then((v) => v === 'outline'),
       'author outline navigation',
     );
     await clearHold(slow);
-    assert.equal(await outline.getAttribute('aria-pressed'), 'true');
+    assert.equal(await page.locator('.novel-manuscript').getAttribute('data-view'), 'outline');
     assert.equal(await prompt.count(), 0);
     await page.getByRole('button', { name: '正文', exact: true }).click();
     await waitEditor(editor, local);
@@ -161,7 +172,7 @@ export async function verifySelectionNavigation({ page, context, origin, root, w
     };
     await page.route('**/api/novels/' + id + '/document?**', rejectRules);
     try {
-      await prompts.click();
+      await openBookSection(page, '提示词');
       await page.locator('.novel-ms-status').filter({ hasText: '导航读取失败测试' }).waitFor();
       assert.equal(
         await page.getByRole('region', { name: '历史版本', exact: true }).count(),
@@ -173,11 +184,11 @@ export async function verifySelectionNavigation({ page, context, origin, root, w
         await page.getByRole('button', { name: '正文', exact: true }).getAttribute('aria-pressed'),
         'true',
       );
-      assert.equal(await prompts.getAttribute('aria-pressed'), 'false');
+      assert.equal(await page.locator('.novel-manuscript').getAttribute('data-view'), 'chapter');
     } finally {
       await page.unroute('**/api/novels/' + id + '/document?**', rejectRules);
     }
-    await prompts.click();
+    await openBookSection(page, '提示词');
     await prompt.waitFor();
     await page.getByRole('button', { name: '正文', exact: true }).click();
     await waitEditor(editor, local);
@@ -189,7 +200,7 @@ export async function verifySelectionNavigation({ page, context, origin, root, w
     await beforeResponse.dispose();
     const stale = await holdRead(path);
     await stale.ready(); // Original four-second poll, not a new test scheduler.
-    await prompts.click();
+    await openBookSection(page, '提示词');
     await prompt.waitFor();
     const remote = local + '\n另一个设备保存的新段落。';
     const newerResponse = await client.put(api + 'document', {
@@ -217,7 +228,7 @@ export async function verifySelectionNavigation({ page, context, origin, root, w
     for (const width of [768, 1280]) {
       await page.setViewportSize({ width, height: 900 });
       const pending = await holdRead('rules.json');
-      await prompts.click();
+      await openBookSection(page, '提示词');
       await pending.ready();
       await page.getByRole('button', { name: '正文', exact: true }).click();
       await waitEditor(editor, remote);
@@ -246,13 +257,16 @@ export async function verifySelectionNavigation({ page, context, origin, root, w
       await page.getByRole('button', { name: '保存正文', exact: true }).click();
       await waitFor(() => writeHeld, 'original save admitted once');
       assert.equal(
-        await prompts.isDisabled(),
+        await page.getByRole('button', { name: '文稿选项', exact: true }).isDisabled(),
         true,
         'Actual formal writes must still retain their original navigation barrier.',
       );
       releaseWrite();
       await page.locator('.novel-ms-status').filter({ hasText: '已保存' }).waitFor();
-      await waitFor(() => prompts.isEnabled(), 'original save cleanup restores navigation');
+      await waitFor(
+        () => page.getByRole('button', { name: '文稿选项', exact: true }).isEnabled(),
+        'original save cleanup restores navigation',
+      );
       const savedResponse = await client.get(api + 'document?path=' + encodeURIComponent(path));
       assert.equal((await savedResponse.json()).text, remote + '\n本次手动保存。');
       await savedResponse.dispose();
@@ -269,7 +283,9 @@ export async function verifySelectionNavigation({ page, context, origin, root, w
     await verifyMobileDrawer({ page, context, origin, root, waitFor });
     assert.equal(await page.title(), '小说工作台');
     assert.equal(await page.evaluate(() => globalThis.__privacyTitleViolations), 0);
-    console.log('Browser title privacy passed: real synthetic session rename, panel navigation, reload, mobile/desktop and modal transitions keep one generic title; original conversation metadata remains editable.');
+    console.log(
+      'Browser title privacy passed: real synthetic session rename, panel navigation, reload, mobile/desktop and modal transitions keep one generic title; original conversation metadata remains editable.',
+    );
     console.log(
       'Native selection navigation passed: held initial/panel reads stay navigable; latest author selection wins; original unsaved draft retained/saved; failed read keeps current page and explicit retry; stale ABA poll cannot replace reopened newer revision; actual save retains original write barrier; 390/768/1280 layouts. No provider or production writes.',
     );

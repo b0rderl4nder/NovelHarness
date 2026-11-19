@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
 import { parseTaskMessage } from '../pages/public/novel-assets/task-message.mjs';
-import { clickSidebarEntry } from './editor-client.mjs';
+import { openBookSection, clickSidebarEntry } from './editor-client.mjs';
 const hash = (text) => createHash('sha256').update(text).digest('hex');
 export async function verifyWritingRun({ page, context, origin, book, model, waitFor, root }) {
   const liveTitle = '原件与登记簿 · 连写使用当前书名';
@@ -86,7 +86,7 @@ export async function verifyWritingRun({ page, context, origin, book, model, wai
   if (await assistant.isVisible()) await assistant.click();
   await composer.fill('连写合成样本：保留日期、原件与行动后果。');
   await page.getByRole('button', { name: '返回书稿', exact: true }).click();
-  await page.getByRole('button', { name: '连写', exact: true }).click();
+  await openBookSection(page, '连写');
   const panel = page.getByRole('region', { name: '按纲连写', exact: true });
   await page.getByLabel('连写起始章', { exact: true }).fill('1');
   await page.getByLabel('连写结束章', { exact: true }).fill('3');
@@ -107,15 +107,15 @@ export async function verifyWritingRun({ page, context, origin, book, model, wai
   assert.equal(before.skipped, 1);
   assert.equal(before.generated, 0);
   // Browsing other book views must not cancel native execution or discard progress.
-  await page.getByRole('button', { name: '大纲', exact: true }).click();
-  await page.getByRole('button', { name: '提示词', exact: true }).click();
-  await page.getByRole('button', { name: '连写', exact: true }).click();
+  await openBookSection(page, '大纲');
+  await openBookSection(page, '提示词');
+  await openBookSection(page, '连写');
   await panel.getByRole('button', { name: '停止连写', exact: true }).click();
   await page.getByLabel('当前对话执行状态', { exact: true }).filter({ hasText: 'AI 已停止' }).waitFor();
   model.release(interrupted);
   const requestCount = model.requests.length;
   await page.reload();
-  await page.getByRole('button', { name: '连写', exact: true }).click();
+  await openBookSection(page, '连写');
   await panel.getByRole('button', { name: /第 1–3 章 · 0\/2/ }).click();
   await panel.getByText('第 2 章 · 部分草稿 · 可继续', { exact: true }).waitFor();
   assert.equal(

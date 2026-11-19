@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { resolve } from 'node:path';
-import { waitEditor } from './editor-client.mjs';
+import { openBookSection, waitEditor } from './editor-client.mjs';
 import { visibleViewportFixture } from './visible-viewport-fixture.mjs';
 import { newFixtureApi } from './fixture-api.mjs';
 import { verifyConversationReading } from './conversation-reading-scenario.mjs';
@@ -221,7 +221,7 @@ export async function verifyCreativeQuestions({ page, context, origin, model, wa
           beforeReload,
           'Refresh recovers native pending questions without resubmitting.',
         );
-        await page.getByRole('button', { name: '提示词', exact: true }).click();
+        await openBookSection(page, '提示词');
         assert.equal(
           await panel.isVisible(),
           true,
@@ -233,7 +233,7 @@ export async function verifyCreativeQuestions({ page, context, origin, model, wa
           true,
           'Focusing a manuscript field cannot hide pending native answers.',
         );
-        await page.getByRole('button', { name: '大纲', exact: true }).click();
+        await openBookSection(page, '大纲');
         assert.equal(await panel.isVisible(), true);
       }
       await panel.getByRole('radio', { name: '成为新的守钟人', exact: true }).scrollIntoViewIfNeeded();
@@ -363,7 +363,7 @@ export async function verifyCreativeQuestions({ page, context, origin, model, wa
       ],
       finalText: '已清空旧规划，正文已入书；旧稿保留。',
     });
-    await page.getByRole('button', { name: '大纲', exact: true }).click();
+    await openBookSection(page, '大纲');
     await page
       .getByText(/第 1 章 · 未来笔迹/)
       .first()
@@ -451,7 +451,7 @@ export async function verifyCreativeQuestions({ page, context, origin, model, wa
       path: resolve(root, 'test-results/cloud-mobile-free-prose.png'),
       fullPage: true,
     });
-    await page.getByRole('button', { name: '提示词', exact: true }).click();
+    await openBookSection(page, '提示词');
     const prompt = page.getByRole('textbox', { name: '提示词 write', exact: true });
     await prompt.waitFor();
     await prompt.focus();
@@ -510,7 +510,7 @@ export async function verifyCreativeQuestions({ page, context, origin, model, wa
     page.on('request', recordRead);
     try {
       await page.reload();
-      await page.getByRole('button', { name: '提示词', exact: true }).click();
+      await openBookSection(page, '提示词');
       await prompt.waitFor();
     } catch (error) {
       console.error('Synthetic prompt reload reads:', reloadReads);
@@ -547,7 +547,7 @@ export async function verifyCreativeQuestions({ page, context, origin, model, wa
     await page.locator('.novel-ms-status').filter({ hasText: '已保存' }).waitFor();
     assert.equal(JSON.parse((await get('document?path=rules.json')).text).savedPrompts.write, styleText);
     await page.setViewportSize({ width: 390, height: 844 });
-    await page.getByRole('button', { name: '设定', exact: true }).click();
+    await openBookSection(page, '设定');
     await page.getByRole('button', { name: '人物与资料', exact: true }).click();
     await page.getByRole('button', { name: '＋ 人物', exact: true }).click();
     await page.getByRole('textbox', { name: '新人物名称', exact: true }).fill('移动端测试人物');

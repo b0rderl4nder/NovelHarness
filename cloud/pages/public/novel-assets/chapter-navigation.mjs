@@ -96,12 +96,14 @@ export function createChapterNavigation(React) {
             },
             '→',
           ),
-          h(
-            'button',
-            { type: 'button', disabled, onClick: onAdd, 'aria-label': '＋ 新章', title: '新建章节' },
-            h('span', { 'aria-hidden': true }, '＋'),
-            h('span', { className: 'novel-chapter-add-label', 'aria-hidden': true }, ' 新章'),
-          ),
+          onAdd
+            ? h(
+                'button',
+                { type: 'button', disabled, onClick: onAdd, 'aria-label': '＋ 新章', title: '新建章节' },
+                h('span', { 'aria-hidden': true }, '＋'),
+                h('span', { className: 'novel-chapter-add-label', 'aria-hidden': true }, ' 新章'),
+              )
+            : null,
         ),
       ),
       expanded

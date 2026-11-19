@@ -1,7 +1,13 @@
 // Behavior-inspired, independently implemented. Real native runtime, synthetic model only.
 import assert from 'node:assert/strict';
 import { resolve } from 'node:path';
-import { openChapter, fillEditor, waitEditor } from './editor-client.mjs';
+import {
+  openBookSection,
+  openChapter,
+  openDocumentOptions,
+  fillEditor,
+  waitEditor,
+} from './editor-client.mjs';
 import { parseTaskMessage } from '../pages/public/novel-assets/task-message.mjs';
 export async function verifyBorrowedWorkflow({ page, context, origin, book, model, waitFor, root }) {
   const base = origin + '/api/novels/' + book.id + '/';
@@ -29,6 +35,7 @@ export async function verifyBorrowedWorkflow({ page, context, origin, book, mode
   );
   await page.getByRole('button', { name: '正文', exact: true }).click();
   await openChapter(page, first.path);
+  await openDocumentOptions(page);
   const guide = page.locator('.novel-chapter-focus');
   assert.equal(await guide.evaluate((node) => node.open), false);
   await guide.locator(':scope > summary').click();
@@ -60,7 +67,7 @@ export async function verifyBorrowedWorkflow({ page, context, origin, book, mode
     'native evidence-based coverage review',
   );
   await activity.filter({ hasText: 'AI 执行中' }).waitFor();
-  await page.getByRole('button', { name: '提示词', exact: true }).click();
+  await openBookSection(page, '提示词');
   assert.equal(coverage.holds[0].closed, false, 'Browsing must not interrupt the native review stream.');
   model.release(coverage);
   await activity.filter({ hasText: 'AI 已结束' }).waitFor();
@@ -194,7 +201,7 @@ export async function verifyBorrowedWorkflow({ page, context, origin, book, mode
   try {
     await exporter.getByRole('button', { name: '下载成稿', exact: true }).click();
     await waitFor(() => observed, 'owned delayed export file read');
-    await page.getByRole('button', { name: '大纲', exact: true }).click();
+    await openBookSection(page, '大纲');
     await exporter.getByRole('button', { name: '取消导出', exact: true }).click();
     await exporter.getByRole('status').filter({ hasText: '已取消' }).waitFor();
   } finally {

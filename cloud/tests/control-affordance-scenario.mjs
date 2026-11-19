@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { clickSidebarEntry, openChapter, fillEditor, waitEditor } from './editor-client.mjs';
+import { openBookSection, clickSidebarEntry, openChapter, fillEditor, waitEditor } from './editor-client.mjs';
 import { newFixtureApi } from './fixture-api.mjs';
 import { contrast } from './control-contrast.mjs';
 
@@ -68,14 +68,16 @@ export async function verifyControlAffordance({ page, context, origin, model, ro
         const touch = width <= 600;
         const controls = [];
         if (touch) controls.push(await measure(page.getByRole('button', { name: '展开导航', exact: true })));
-        for (const label of ['正文', '大纲', '连写', '设定', '提示词', '文稿选项', '＋ 新章'])
+        for (const label of ['正文', '本章章纲', '文稿选项', '＋ 新章'])
           controls.push(await measure(page.getByRole('button', { name: label, exact: true }), { touch }));
         assert.ok(await page.locator('.novel-chapter-add-label').isVisible(), 'Keep 新章 text on phones.');
         await page.getByRole('button', { name: '文稿选项', exact: true }).click();
+        for (const label of ['大纲', '连写', '设定', '提示词'])
+          await measure(page.getByRole('button', { name: label, exact: true }), { touch });
         await measure(page.getByRole('button', { name: '历史', exact: true }), { touch });
         await measure(page.getByRole('button', { name: '生成记录', exact: true }), { touch });
         await page.getByRole('button', { name: '文稿选项', exact: true }).click();
-        await page.getByRole('button', { name: '大纲', exact: true }).click();
+        await openBookSection(page, '大纲');
         await page.getByRole('region', { name: '章节大纲', exact: true }).waitFor();
         await page.locator('.novel-ms-tabs[aria-busy="false"]').waitFor();
         const plan = page.getByRole('button', { name: '生成规划候选', exact: true });

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { resolve } from 'node:path';
 import {
+  openBookSection,
   fillEditor,
   readEditor,
   waitEditor,
@@ -63,8 +64,13 @@ export async function verifyNovelStudio({ page, context, origin, model, root, wa
     0,
     'Outline planning uses its own request form; an unrelated composer must not crowd it.',
   );
-  for (const name of ['正文', '大纲', '连写', '设定', '提示词'])
+  assert.equal(await page.getByRole('button', { name: '正文', exact: true }).isVisible(), true);
+  const more = page.getByRole('button', { name: '文稿选项', exact: true });
+  assert.equal(await more.getAttribute('aria-expanded'), 'false');
+  await more.click();
+  for (const name of ['大纲', '连写', '设定', '提示词'])
     assert.equal(await page.getByRole('button', { name, exact: true }).isVisible(), true);
+  await more.click();
   assert.equal(await page.getByText('从一个念头开始', { exact: true }).count(), 0);
   assert.equal(await page.locator('.novel-studio-sidebar').count(), 1);
   const book = await page.evaluate(
@@ -79,7 +85,7 @@ export async function verifyNovelStudio({ page, context, origin, model, root, wa
     return result;
   };
   // Five editable original templates, project-scoped save, no provider call.
-  await page.getByRole('button', { name: '提示词', exact: true }).click();
+  await openBookSection(page, '提示词');
   const prompt = page.getByRole('textbox', { name: '提示词 write', exact: true });
   await prompt.waitFor();
   const customized = (await prompt.inputValue()) + '\n独立测试规则：用证物的变化推动选择。';
@@ -113,7 +119,7 @@ export async function verifyNovelStudio({ page, context, origin, model, root, wa
       self.steps = proposalSteps(text, JSON.stringify(planned), { complete: true });
     },
   });
-  await page.getByRole('button', { name: '大纲', exact: true }).click();
+  await openBookSection(page, '大纲');
   await page.getByLabel('本批规划章数', { exact: true }).fill('1');
   await page.getByLabel('本次规划要求', { exact: true }).fill(plan.marker);
   await page.getByRole('button', { name: '生成规划候选', exact: true }).click();
@@ -124,7 +130,7 @@ export async function verifyNovelStudio({ page, context, origin, model, root, wa
   const card = page.locator('.novel-task-card').first();
   await card.waitFor();
   await page.getByRole('button', { name: '返回书稿', exact: true }).click();
-  await page.getByRole('button', { name: '提示词', exact: true }).click();
+  await openBookSection(page, '提示词');
   assert.equal(plan.holds[0].closed, false, 'Browsing must not cancel an in-flight turn.');
   model.release(plan);
   await waitFor(
@@ -134,7 +140,7 @@ export async function verifyNovelStudio({ page, context, origin, model, root, wa
   assert.equal(JSON.parse((await get('document?path=outline.json')).text)[0].summary, summary);
   model.release(plan);
   await activity.filter({ hasText: 'AI 已结束' }).waitFor({ state: 'attached' });
-  await page.getByRole('button', { name: '大纲', exact: true }).click();
+  await openBookSection(page, '大纲');
   assert.ok((await page.locator('.novel-outline-editor').textContent()).includes(summary));
   assert.equal(await page.getByRole('button', { name: '接受本批规划', exact: true }).count(), 0);
   await page.getByRole('button', { name: '起草本章', exact: true }).click();
@@ -206,7 +212,7 @@ export async function verifyNovelStudio({ page, context, origin, model, root, wa
   });
   await page.setViewportSize({ width: 1440, height: 960 });
   await page.getByRole('button', { name: '返回书稿', exact: true }).click();
-  await page.getByRole('button', { name: '提示词', exact: true }).click();
+  await openBookSection(page, '提示词');
   assert.equal(write.holds.at(-1).closed, false, 'Browsing cannot close the argument stream.');
   model.release(write);
   await page.getByRole('button', { name: '正文', exact: true }).click();
@@ -245,7 +251,7 @@ export async function verifyNovelStudio({ page, context, origin, model, root, wa
   await page.getByRole('button', { name: '保存正文', exact: true }).click();
   await page.locator('.novel-ms-status').filter({ hasText: '已保存' }).waitFor();
   const persistentInput = await composer.elementHandle();
-  await page.getByRole('button', { name: '提示词', exact: true }).click();
+  await openBookSection(page, '提示词');
   assert.equal(await composer.isVisible(), false);
   await page.getByRole('button', { name: '正文', exact: true }).click();
   await composer.waitFor({ state: 'visible' });
@@ -260,11 +266,11 @@ export async function verifyNovelStudio({ page, context, origin, model, root, wa
     await page.setViewportSize({ width, height });
     await waitEditor(editor, local);
     await waitFor(
-      async () => !(await page.getByRole('button', { name: '大纲', exact: true }).isDisabled()),
+      async () => !(await page.getByRole('button', { name: '文稿选项', exact: true }).isDisabled()),
       'settled manuscript controls',
     );
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
-    assert.equal(await page.getByRole('button', { name: '大纲', exact: true }).isVisible(), true);
+    assert.equal(await page.getByRole('button', { name: '文稿选项', exact: true }).isVisible(), true);
     const inputBox = await composer.boundingBox();
     assert.ok(inputBox && inputBox.y >= 0 && inputBox.y + inputBox.height <= height);
     assert.equal(await page.locator('[data-composer-seat]').count(), 1);
@@ -272,7 +278,7 @@ export async function verifyNovelStudio({ page, context, origin, model, root, wa
       path: resolve(root, 'test-results/cloud-novel-studio-' + name + '.png'),
       fullPage: true,
     });
-    await page.getByRole('button', { name: '大纲', exact: true }).click();
+    await openBookSection(page, '大纲');
     assert.ok((await page.locator('.novel-outline-editor').textContent()).includes(summary));
     await page.getByRole('button', { name: '正文', exact: true }).click();
   }

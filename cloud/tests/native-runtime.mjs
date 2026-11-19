@@ -8,6 +8,7 @@ import { verifyDraftRecovery } from './draft-scenario.mjs';
 import { verifyChapterNavigation } from './chapter-scenario.mjs';
 import { verifyChapterOrder } from './chapter-order-scenario.mjs';
 import {
+  openBookSection,
   fillEditor,
   readEditor,
   waitEditor,
@@ -425,7 +426,7 @@ try {
       ).status(),
       200,
     );
-    await page.getByRole('button', { name: '设定', exact: true }).click();
+    await openBookSection(page, '设定');
     await page.getByRole('button', { name: '人物与资料', exact: true }).click();
     const canonRegion = page.getByLabel('人物与资料编辑器', { exact: true });
     await canonRegion.waitFor();
@@ -925,7 +926,7 @@ try {
     // 1280px viewport minus the native sidebar now intentionally uses one pane.
     // Return via the real workspace control instead of clicking hidden paper tabs.
     await otherPage.getByRole('button', { name: '返回书稿', exact: true }).click();
-    await otherPage.getByRole('button', { name: '设定', exact: true }).click();
+    await openBookSection(otherPage, '设定');
     await otherPage.getByRole('button', { name: '正文', exact: true }).click();
     assert.equal(await nativeComposer.textContent(), '必须保留的对话草稿');
     assert.equal(await otherPage.getByRole('textbox', { name: '这次想怎么写', exact: true }).count(), 0);
@@ -1008,7 +1009,7 @@ try {
       200,
     );
     await clearNativeComposer();
-    await otherPage.getByRole('button', { name: '设定', exact: true }).click();
+    await openBookSection(otherPage, '设定');
     await otherPage.getByRole('button', { name: '人物与资料', exact: true }).click();
     assert.equal(
       await otherPage.getByText('AI 整理建议', { exact: true }).count(),
@@ -1318,7 +1319,7 @@ try {
       await release;
       await route.continue();
     });
-    await otherPage.getByRole('button', { name: '大纲', exact: true }).click();
+    await openBookSection(otherPage, '大纲');
     await delayedRead;
     await otherPage.getByRole('status').filter({ hasText: '正在打开文稿…' }).waitFor();
     assert.equal(
@@ -1412,7 +1413,7 @@ try {
       200,
     );
     await clearNativeComposer();
-    await otherPage.getByRole('button', { name: '大纲', exact: true }).click();
+    await openBookSection(otherPage, '大纲');
     await otherPage.getByText('AI 续规划 / 调整', { exact: true }).click();
     await otherPage.getByRole('spinbutton', { name: '规划起始章', exact: true }).fill('1');
     await otherPage.getByRole('spinbutton', { name: '本批规划章数', exact: true }).fill('2');
@@ -1525,7 +1526,7 @@ try {
         .text,
       globalDirection,
     );
-    await otherPage.getByRole('button', { name: '设定', exact: true }).click();
+    await openBookSection(otherPage, '设定');
     await otherPage.getByLabel('人物与资料编辑器', { exact: true }).waitFor();
     assert.equal(
       await otherPage.getByRole('region', { name: '章节大纲', exact: true }).count(),

@@ -2,7 +2,14 @@
 // Does not read deployment.json, owner-key.txt, real provider keys or production.
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { selectEditor, readEditor, waitEditor, openChapter, clickSidebarEntry } from './editor-client.mjs';
+import {
+  openBookSection,
+  selectEditor,
+  readEditor,
+  waitEditor,
+  openChapter,
+  clickSidebarEntry,
+} from './editor-client.mjs';
 import { spawn } from 'node:child_process';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
@@ -293,7 +300,7 @@ try {
     assert.deepEqual(errors, []);
     assert.ok(model.requests.every((request) => request.keysSynthetic));
   } else {
-    await page.getByRole('button', { name: '提示词', exact: true }).click();
+    await openBookSection(page, '提示词');
     const writingRule = '用动作与停顿表现情绪，不用旁白替读者总结。';
     await page.getByRole('textbox', { name: '提示词 write', exact: true }).fill(writingRule);
     await page.getByRole('button', { name: '保存提示词', exact: true }).click();
@@ -1082,9 +1089,9 @@ try {
       await page.getByRole('region', { name: '小说书稿', exact: true }).getAttribute('data-book-id'),
       planBook.id,
     );
-    assert.equal(await page.getByRole('button', { name: '大纲', exact: true }).isDisabled(), true);
+    assert.equal(await page.getByRole('button', { name: '文稿选项', exact: true }).isDisabled(), true);
     releaseSeed();
-    await page.getByRole('button', { name: '大纲', exact: true }).click();
+    await openBookSection(page, '大纲');
     await page.unroute(seedRoute, holdSeed);
     assert.equal(await page.locator('.novel-outline-planner').evaluate((element) => element.open), true);
     for (const [number, key] of [

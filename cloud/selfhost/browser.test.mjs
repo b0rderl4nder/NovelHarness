@@ -85,6 +85,7 @@ try {
   await created.dispose();
   for (const [path, text] of [
     ['chapters/00001.md', prose],
+    ['chapters/00002.md', '# 渡口\n\n' + '夜风吹过空荡的渡口。\n\n'.repeat(60)],
     [
       'setting.md',
       '# 背景设定\n\n沿海小城，渡口与旧邮局。\n\n# 人物\n\n林遥经营书店，收到多年未见的朋友的来信。',
@@ -94,9 +95,17 @@ try {
       JSON.stringify([
         {
           chapter: 1,
+          chapterPath: 'chapters/00001.md',
           title: '雨港',
           summary: '林遥在渡口收到一封来信，去茶馆见到故人。',
           beats: ['渡船靠岸，信被送到。', '茶馆中谈起旧事。'],
+        },
+        {
+          chapter: 2,
+          chapterPath: 'chapters/00002.md',
+          title: '渡口',
+          summary: '林遥回到渡口。',
+          plotPoints: [],
         },
       ]),
     ],

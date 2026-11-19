@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { resolve } from 'node:path';
-import { readEditor, fillEditor, clickSidebarEntry } from './editor-client.mjs';
+import { openBookSection, readEditor, fillEditor, clickSidebarEntry } from './editor-client.mjs';
 
 export async function verifyImportRecords({ page, context, origin, root, restoreBookId }) {
   const source = {
@@ -64,7 +64,7 @@ export async function verifyImportRecords({ page, context, origin, root, restore
       reads++;
   };
   page.on('request', countRead);
-  await page.getByRole('button', { name: '设定', exact: true }).click();
+  await openBookSection(page, '设定');
   await page.getByRole('button', { name: '背景与人物', exact: true }).click();
   const settingURL = origin + '/api/novels/' + bookId + '/document?path=setting.md';
   const oldSetting = await (await context.request.get(settingURL)).json();

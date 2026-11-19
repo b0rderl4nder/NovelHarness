@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { resolve } from 'node:path';
-import { openChapter, waitEditor, clickSidebarEntry } from './editor-client.mjs';
+import { openBookSection, openChapter, waitEditor, clickSidebarEntry } from './editor-client.mjs';
 
 // Original Harness model HTTP/tool/session + VFS integration. Synthetic local
 // provider only. Never reads production credentials or alters formal books.
@@ -18,7 +18,7 @@ export async function verifyAuthoringSystem({ page, context, origin, model, wait
     return value;
   };
   const path = 'chapters/authoring.md';
-  await page.getByRole('button', { name: '提示词', exact: true }).click();
+  await openBookSection(page, '提示词');
   const prompts = page.getByLabel('提示词编辑器', { exact: true });
   for (const label of ['助手总规则', '风格与禁忌', '人称与角色视角', '参考风格与手法'])
     assert.equal(await prompts.getByText(label, { exact: true }).count(), 0);
@@ -265,7 +265,7 @@ export async function verifyAuthoringSystem({ page, context, origin, model, wait
       fullPage: true,
     });
     assert.equal(await page.getByRole('button', { name: /^改稿/ }).count(), 0);
-    await page.getByRole('button', { name: '设定', exact: true }).click();
+    await openBookSection(page, '设定');
     await page.getByRole('button', { name: '人物与资料', exact: true }).click();
     assert.equal(await page.getByText('AI 整理建议', { exact: true }).count(), 0);
     await page.getByRole('button', { name: '正文', exact: true }).click();

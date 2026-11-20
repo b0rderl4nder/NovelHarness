@@ -65,8 +65,8 @@ test('unified neutral palette composes on original theme owner, retains light/da
   owner.select('neutral');
   assert.equal(stored.get('novel-studio-accent'), 'neutral');
   assert.equal(calls.at(-1).source, 'novel-studio');
-  assert.equal(calls.at(-1).tokens['--dsw-alias-bg-base'].dark, '#151619');
-  assert.equal(calls.at(-1).tokens['--dsw-alias-bg-base'].light, '#f5f5f7');
+  assert.equal(calls.at(-1).tokens['--dsw-alias-bg-base'].dark, '#111316');
+  assert.equal(calls.at(-1).tokens['--dsw-alias-bg-base'].light, '#ebedef');
   assert.throws(() => owner.select('invalid'));
   assert.deepEqual(studioTokens('unknown'), studioTokens('neutral'));
   cleanup.reverse().forEach((fn) => fn?.());

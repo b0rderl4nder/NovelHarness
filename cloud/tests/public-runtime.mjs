@@ -736,8 +736,8 @@ try {
       return (
         typeof installStudioTheme === 'function' &&
         typeof resetBookConversation === 'function' &&
-        studioTokens()['--dsw-alias-bg-base'].dark === '#151619' &&
-        studioTokens()['--dsw-alias-bg-base'].light === '#f5f5f7'
+        studioTokens()['--dsw-alias-bg-base'].dark === '#111316' &&
+        studioTokens()['--dsw-alias-bg-base'].light === '#ebedef'
       );
     }),
     nativeConversationPreviewRecoveryAssetsAvailable: await page.evaluate(async () => {

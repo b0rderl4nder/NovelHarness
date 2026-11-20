@@ -250,7 +250,7 @@ export async function verifyAuthoringSystem({ page, context, origin, model, wait
       await page.evaluate(() =>
         getComputedStyle(document.body).getPropertyValue('--dsw-alias-bg-base').trim(),
       ),
-      '#151619',
+      '#111316',
     );
     await page.screenshot({
       path: resolve(root, 'test-results/cloud-authoring-assistant-' + width + '.png'),

@@ -60,7 +60,7 @@ export async function verifyControlAffordance({ page, context, origin, model, ro
       await settings.getByRole('button', { name: '关闭', exact: true }).click();
       await page.waitForFunction(
         (color) => getComputedStyle(document.body).getPropertyValue('--dsw-alias-bg-base').trim() === color,
-        theme === '浅色' ? '#f5f5f7' : '#151619',
+        theme === '浅色' ? '#ebedef' : '#111316',
       );
       for (const width of [320, 390, 768, 1440]) {
         await page.setViewportSize({ width, height: 844 });

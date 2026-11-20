@@ -24,6 +24,7 @@ try {
   });
   const a = await browser.newContext({
     hasTouch: true,
+    colorScheme: 'light',
     viewport: { width: 1280, height: 900 },
     locale: 'zh-CN',
     timezoneId: 'Asia/Shanghai',

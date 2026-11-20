@@ -12,9 +12,13 @@ import {
 
 export async function verifyWritingUi({ page, context, origin, book, prose }) {
   const shot = (name) => page.screenshot({ path: 'test-results/ui-' + name + '.png' });
+  const palette = () =>
+    page.evaluate(() => getComputedStyle(document.body).getPropertyValue('--dsw-alias-bg-base').trim());
   const overflow = async () =>
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1), false);
   const search = page.getByRole('searchbox', { name: '搜索小说', exact: true });
+  // Fresh profiles open in night mode even when the OS requests light.
+  await expect.poll(palette).toBe('#111316');
   await search.fill('雨港');
   await expect(search).toHaveValue('雨港');
   await expect(page.locator('.book:visible')).toHaveCount(1);
@@ -120,6 +124,14 @@ export async function verifyWritingUi({ page, context, origin, book, prose }) {
   await openChapter(page, 'chapters/00001.md');
   const editor = page.getByRole('textbox', { name: '书稿正文', exact: true });
   await waitEditor(editor, prose);
+  await expect(page.locator('.novel-ms-body .novel-prose-editor')).toHaveCSS(
+    'background-color',
+    'rgb(27, 29, 32)',
+  );
+  await expect(page.getByRole('button', { name: '创作助手', exact: true })).toHaveCSS(
+    'background-color',
+    'rgb(232, 201, 77)',
+  );
   const localOutline = page.getByRole('button', { name: '本章章纲', exact: true });
   const outlineRegion = page.getByRole('region', { name: '本章章纲', exact: true });
   const returnToProse = page.getByRole('button', { name: '正文', exact: true });
@@ -264,12 +276,18 @@ export async function verifyWritingUi({ page, context, origin, book, prose }) {
   const settings = page.getByRole('dialog', { name: '设置', exact: true });
   await settings.getByRole('button', { name: '通用设置', exact: true }).click();
   await settings.getByRole('button', { name: '浅色', exact: true }).click();
+  await expect.poll(palette).toBe('#ebedef');
+  await expect(page.locator('.novel-ms-body .novel-prose-editor')).toHaveCSS(
+    'background-color',
+    'rgb(255, 255, 255)',
+  );
   await page.keyboard.press('Escape');
   await settings.waitFor({ state: 'hidden' });
   await shot('manuscript-light');
   await clickSidebarEntry(page, 'button', '设置');
   await settings.getByRole('button', { name: '通用设置', exact: true }).click();
   await settings.getByRole('button', { name: '深色', exact: true }).click();
+  await expect.poll(palette).toBe('#111316');
   await page.keyboard.press('Escape');
   await settings.waitFor({ state: 'hidden' });
   await page.setViewportSize({ width: 390, height: 600 });

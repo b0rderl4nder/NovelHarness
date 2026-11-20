@@ -1,7 +1,7 @@
 // Palette composition uses the ORIGINAL theme owner and original Appearance
 // preference. Only the optional device-local accent is stored in the browser.
 export const ACCENTS = Object.freeze({
-  neutral: { label: '中性', light: '#353942', dark: '#d0d2d9' },
+  neutral: { label: '蓝图', light: '#004fd6', dark: '#77b2ff' },
   blue: { label: '雾蓝', light: '#365aa3', dark: '#a4bdf2' },
   violet: { label: '浅紫', light: '#7550a2', dark: '#c8b1e8' },
   amber: { label: '琥珀', light: '#876019', dark: '#dcc38b' },
@@ -11,27 +11,31 @@ const pair = (light, dark) => ({ light, dark });
 export function studioTokens(accent = 'neutral') {
   const color = ACCENTS[accent] ?? ACCENTS.neutral;
   return {
-    '--dsw-alias-bg-base': pair('#f5f5f7', '#151619'),
-    '--dsw-alias-bg-layer-1': pair('#ffffff', '#1b1e24'),
-    '--dsw-alias-bg-layer-2': pair('#f9fafb', '#242830'),
-    '--dsw-alias-bg-layer-3': pair('#f0f2f5', '#2e333d'),
-    '--dsw-alias-bg-module-platform': pair('#eceef1', '#1b1c20'),
-    '--dsw-alias-border-l2': pair('#dfe1e6', '#303239'),
-    '--dsw-alias-border-l3': pair('#d9dce2', '#36383f'),
-    '--dsw-alias-label-primary': pair('#24262b', '#e8e9ed'),
-    '--dsw-alias-label-secondary': pair('#565b66', '#b5b8c2'),
-    '--dsw-alias-label-tertiary': pair('#636773', '#9a9da6'),
+    '--dsw-alias-bg-base': pair('#ebedef', '#111316'),
+    '--dsw-alias-bg-layer-1': pair('#ffffff', '#1b1d20'),
+    '--dsw-alias-bg-layer-2': pair('#f4f6fa', '#262a31'),
+    '--dsw-alias-bg-layer-3': pair('#e6edf6', '#303743'),
+    '--dsw-alias-bg-module-platform': pair('#ebedef', '#111316'),
+    '--dsw-alias-border-l2': pair('#c4cfdf', '#394353'),
+    '--dsw-alias-border-l3': pair('#8a9bb5', '#485567'),
+    '--dsw-alias-label-primary': pair('#171d25', '#dbe6f3'),
+    '--dsw-alias-label-secondary': pair('#43516a', '#aebed3'),
+    '--dsw-alias-label-tertiary': pair('#56647a', '#9eabbd'),
     '--dsw-alias-state-business-primary': pair(color.light, color.dark),
     '--dsw-alias-brand-primary': pair(color.light, color.dark),
     '--dsw-alias-link': pair(color.light, color.dark),
     '--dsw-alias-label-primary-foreground': pair('#ffffff', '#18191c'),
-    '--dsw-alias-interactive-bg-hover': pair('#24262b0a', '#e8e9ed0b'),
-    '--dsw-alias-interactive-bg-active': pair('#24262b12', '#e8e9ed14'),
-    '--novel-control-bg': pair('#ffffff', '#292c34'),
-    '--novel-control-border': pair('#7b818e', '#7d8494'),
-    '--novel-control-hover': pair('#ebeef4', '#343947'),
-    '--novel-control-disabled-bg': pair('#eceef2', '#24262c'),
-    '--novel-surface-shadow': pair('0 4px 20px #1c243008', '0 4px 20px #00000018'),
+    '--dsw-alias-interactive-bg-hover': pair('#004fd60b', '#77b2ff12'),
+    '--dsw-alias-interactive-bg-active': pair('#004fd61a', '#77b2ff20'),
+    '--novel-control-bg': pair('#ffffff', '#262a31'),
+    '--novel-control-border': pair('#677e9e', '#75859c'),
+    '--novel-control-hover': pair('#e7effb', '#313d4f'),
+    '--novel-control-disabled-bg': pair('#e1e5eb', '#23262d'),
+    '--novel-surface-shadow': pair('none', 'none'),
+    '--novel-blueprint-grid': pair('#152c5815', '#acc1e514'),
+    '--novel-blueprint-rail': pair('#141921', '#090a0d'),
+    '--novel-blueprint-header': pair('#1b222e', '#101216'),
+    '--novel-blueprint-yellow': pair('#ffe13b', '#e8c94d'),
   };
 }
 export function installStudioTheme(ctx, React, { storage } = {}) {

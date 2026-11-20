@@ -320,6 +320,72 @@ html[data-novel-visible-viewport] .novel-author-input [data-question-key] > sect
     display: none;
   }
 }
+
+/* The grid belongs to the working surface. Reading and editing panels stay solid. */
+:is(.novel-application, .novel-desk .novel-ms-body) {
+  background-image:
+    linear-gradient(var(--novel-blueprint-grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--novel-blueprint-grid) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+
+.novel-desk-bar,
+.novel-studio-sidebar {
+  --studio-ink: #e0e5ec;
+  --studio-muted: #b0bdce;
+  --studio-line: #465467;
+  --studio-accent: #77b2ff;
+  --novel-control-bg: #242a35;
+  --novel-control-border: #6d7e97;
+  --novel-control-hover: #303e54;
+  --novel-control-disabled-bg: #20242c;
+  --dsw-alias-label-primary: var(--studio-ink);
+  --dsw-alias-label-tertiary: var(--studio-muted);
+  --dsw-alias-interactive-bg-active: #77b2ff20;
+  color: var(--studio-ink);
+  color-scheme: dark;
+}
+.novel-desk-bar {
+  background: var(--novel-blueprint-header);
+  border-bottom: 2px solid #4e8ce8;
+}
+.novel-studio-sidebar {
+  background: var(--novel-blueprint-rail);
+}
+.novel-studio-sidebar .novel-studio-links [aria-current='page'] {
+  color: var(--studio-accent);
+  box-shadow: inset 2px 0 var(--studio-accent);
+}
+
+:is(.novel-desk-bar, .novel-manuscript, .novel-application, .novel-studio-sidebar)
+  :is(
+    button,
+    .novel-reading-export > summary,
+    .novel-studio-links a,
+    .book,
+    .book-monogram,
+    .novel-prose-editor
+  ) {
+  border-radius: 2px;
+}
+.novel-desk .novel-ms-body > .novel-prose-editor {
+  border-top: 2px solid var(--studio-accent);
+}
+.novel-application .book-monogram {
+  color: var(--studio-accent);
+  border-color: var(--studio-accent);
+}
+.novel-desk .novel-desk-bar > button[data-variant='primary'][aria-expanded='false'],
+.novel-library #new-book:not(:disabled) {
+  background: var(--novel-blueprint-yellow);
+  border-color: var(--novel-blueprint-yellow);
+  color: #171a20;
+}
+.novel-library .book .open-book:not(:disabled) {
+  background: var(--novel-control-bg);
+  border-color: var(--studio-accent);
+  color: var(--studio-accent);
+}
 /* Reading should not permanently pay the height of a chat composer. Reflow
    the ORIGINAL input only: focus, an open native menu, an active run or pending
    question restores its full controls. Drafts, attachments, errors and task

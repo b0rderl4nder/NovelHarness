@@ -10,7 +10,7 @@ export function installProposalTools(instance) {
       const keys =
         action === 'inspect'
           ? ['proposal_id']
-          : ['proposal_id', 'expected_hash', 'content', 'complete', 'content_scope'];
+          : ['proposal_id', 'expected_hash', 'content', 'complete', 'content_scope', 'illustrations'];
       if (
         !args ||
         typeof args !== 'object' ||
@@ -40,6 +40,7 @@ export function installProposalTools(instance) {
         content: args.content,
         complete: args.complete,
         contentScope: args.content_scope,
+        illustrations: args.illustrations,
       });
       return JSON.stringify({ ...value, target: root + '/' + value.target, draft: root + '/' + value.draft });
     };
@@ -235,7 +236,7 @@ export function installProposalTools(instance) {
       {
         name: 'novel_proposal_submit',
         description:
-          '使用 inspect 返回的 expectedHash 原子保存同一任务，不用通用文件工具绕过版本和历史。正文 document=完整章文（可混合修改与续写），append=仅新增，selection=原选段替换；省略则使用 contentScope，不能把全文当新增追加。大纲 content 为 {storyPlan?,chapters:[{title,summary,plotPoints}]}，数量与 task.plan.range 一致；已有方向可省略 storyPlan。资料 content 为完整 canon JSON，新增建议用 trust=auto、唯一 id 及 evidenceSources:[{path,quote}]，引用仅来自 task.sources，不改人工确认项。complete=false 保存部分，true 最终校验并按 publication 保存、备份旧版；published=true 才是入书。冲突保留双方。',
+          '使用 inspect 返回的 expectedHash 原子保存同一任务。正文 document=完整章文，append=仅新增，selection=原选段替换；省略则使用 contentScope。完整章文交付时可用 illustrations 把已有成图一次插到 content 中的对应段落。大纲 content 为 {storyPlan?,chapters:[{title,summary,plotPoints}]}，数量与 task.plan.range 一致；已有方向可省略 storyPlan。资料 content 为完整 canon JSON，新增建议用 trust=auto、唯一 id 及 evidenceSources:[{path,quote}]，引用仅来自 task.sources，保留人工确认项。complete=false 保存部分，true 最终校验并按 publication 保存、备份旧版；published=true 才是入书。冲突保留双方。',
         parameters: {
           type: 'object',
           properties: {
@@ -247,6 +248,22 @@ export function installProposalTools(instance) {
                 '完整当前候选正文或候选 JSON，不含解释和代码围栏。改写时保留原文已有的 illustrations/ 插图链接；需要调位置时用 novel_illustration。',
             },
             complete: { type: 'boolean', description: '仅最终完整交付时为 true。部分保存不得为 true。' },
+            illustrations: {
+              type: 'array',
+              minItems: 1,
+              maxItems: 32,
+              description: '随完整章文一次入书的已有成图。after 是 content 中唯一的一段原文。',
+              items: {
+                type: 'object',
+                properties: {
+                  imagePath: { type: 'string' },
+                  after: { type: 'string', maxLength: 2000 },
+                  caption: { type: 'string', maxLength: 160 },
+                },
+                required: ['imagePath', 'after'],
+                additionalProperties: false,
+              },
+            },
             content_scope: {
               type: 'string',
               enum: ['document', 'append', 'selection'],

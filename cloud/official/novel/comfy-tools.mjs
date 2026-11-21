@@ -12,6 +12,7 @@ import {
   visualAdjustments,
 } from './comfy-presets.mjs';
 import { chatImageReferences, loadChatImage } from './comfy-chat-images.mjs';
+import { chapterDeliveryFor } from './comfy-chapter-delivery.mjs';
 
 const maxImageBytes = 16 * 1024 * 1024;
 const jobId = /^[0-9a-f-]{36}$/;
@@ -52,13 +53,14 @@ export function installComfyTools(
       {
         name: 'novel_generate_image',
         description:
-          '画图、改图、按参考图生成新图。presets 列出工作流、各模型的画面说明和调参范围。按作者要求自行写 prompt，把人物动作、道具位置和取景关系写清楚。generate 成图后自动显示在对话并存入本书图集；需核对时用 inspect 看成图。用 chat:latest、references 列出的对话图片 ID 或本书图集路径作参考。queued 用 status 查询；插入正文用 novel_illustration。',
+          '画图、改图、按参考图生成新图。presets 查看工作流与参数，prompt 由你写。generate 成图后入图集；inspect 看成图。为章节画图时，同一场景沿用同一 caption，先完成章文和首版配图，再按判断重画；revises 填要重画的已有图集路径。用 chat:latest 或图集路径作参考。queued 用 status 查询；在已有正文中移动插图用 novel_illustration。',
         parameters: {
           type: 'object',
           properties: {
             action: { type: 'string', enum: ['presets', 'references', 'inspect', 'generate', 'status'] },
             prompt: { type: 'string', maxLength: 12000 },
             caption: { type: 'string', maxLength: 160 },
+            revises: { type: 'string', description: '可选，本次重画对应的已有 illustrations/ 路径。' },
             preset: { type: 'string', maxLength: 40 },
             seed: { type: 'integer', minimum: 0, maximum: 4294967295 },
             style: { type: 'string', maxLength: 1000 },
@@ -117,9 +119,12 @@ export function installComfyTools(
           schema: { type: 'string' },
           render(args, value) {
             if (args.action !== 'inspect') return [{ type: 'text', text: value }];
-            const { attachment, label } = JSON.parse(value);
+            const { attachment, label, chapterDelivery } = JSON.parse(value);
             return [
-              { type: 'text', text: label },
+              {
+                type: 'text',
+                text: chapterDelivery ? label + '\n' + JSON.stringify(chapterDelivery) : label,
+              },
               { type: 'image', attachment },
             ];
           },
@@ -142,6 +147,8 @@ export function installComfyTools(
         async execute(args, exec) {
           const { action, prompt, reference, job_id: id } = args;
           const references = () => chatImageReferences(sessionQuery, exec.agent.session.id, exec.signal);
+          const service = makeDocumentService(fs, db, book);
+          const chapterDelivery = () => chapterDeliveryFor(sessionQuery, exec, root, book, service);
           const keys =
             action === 'presets' || action === 'references'
               ? ['action']
@@ -153,6 +160,7 @@ export function installComfyTools(
                       'action',
                       'prompt',
                       'caption',
+                      'revises',
                       'reference',
                       'preset',
                       'seed',
@@ -167,6 +175,7 @@ export function installComfyTools(
             !['presets', 'references', 'inspect', 'status', 'generate'].includes(action) ||
             Object.keys(args).some((key) => !keys.includes(key)) ||
             (action === 'inspect' && typeof reference !== 'string') ||
+            (args.revises !== undefined && !/^illustrations\/[a-f0-9]{64}\.json$/.test(args.revises)) ||
             (action === 'status'
               ? typeof id !== 'string' || !jobId.test(id)
               : action === 'generate' &&
@@ -181,7 +190,6 @@ export function installComfyTools(
             });
           }
           if (action === 'inspect') {
-            const service = makeDocumentService(fs, db, book);
             const { data, label } = service.run({
               kind: 'illustrations',
               action: 'read',
@@ -192,8 +200,13 @@ export function installComfyTools(
               mediaType: 'image/webp',
               name: 'novel-illustration.webp',
             });
+            const pending = await chapterDelivery();
             assertScope(exec);
-            return JSON.stringify({ attachment, label: label || '本书插图' });
+            return JSON.stringify({
+              attachment,
+              label: label || '本书插图',
+              ...(pending ? { chapterDelivery: pending } : {}),
+            });
           }
           let row =
             action === 'status' ? find(book, id) : action === 'generate' ? findCall(book, exec.callId) : null;
@@ -208,6 +221,16 @@ export function installComfyTools(
             });
           if (row?.images) return result('ready', { images: JSON.parse(row.images) });
           if (row && !row.prompt_id) return result('unknown');
+          if (!row && action === 'generate' && (args.caption?.trim() || args.revises)) {
+            const pending = await chapterDelivery();
+            assertScope(exec);
+            if (
+              pending?.images.some((image) =>
+                args.revises ? image.imagePath === args.revises : image.label === args.caption.trim(),
+              )
+            )
+              return JSON.stringify({ status: 'deliver-chapter', bookId: book, chapterDelivery: pending });
+          }
           const available = await (configured ??= loadComfyPresets(configPath).catch((error) => {
             configured = undefined;
             if (error.code === 'ENOENT') throw new Error('主机尚未设置可用的 ComfyUI 工作流文件。');
@@ -243,7 +266,6 @@ export function installComfyTools(
             throw new Error(
               row ? '生图预设已改变，无法从另一套预设查询此任务。' : '没有这个生图预设，请先查看预设列表。',
             );
-          const service = makeDocumentService(fs, db, book);
           const comfy = (route, options) => request(config.base, route, { ...options, signal: exec.signal });
           if (!row) {
             if (config.requiresReference && !reference) throw new Error('此编辑预设需要提供参考图。');

@@ -1220,6 +1220,18 @@ export function makeDocumentService(
       };
     }
   }
+  function loadIllustration(path) {
+    if (!illustrationPath(path)) fault(400, '插图路径无效。');
+    const asset = raw(root + '/' + path);
+    if (!asset) fault(404, '本书插图不存在。');
+    if (path !== 'illustrations/' + sha(bytes(asset.text)) + '.json') fault(409, '插图校验失败。');
+    try {
+      return imageAsset(asset.text);
+    } catch (error) {
+      fault(400, error.message);
+    }
+  }
+
   function run(operation) {
     // Only read-only, synchronous transaction paths reuse validated ancestors.
     // Final files are ALWAYS checked (including links). Never retain this set
@@ -1232,19 +1244,8 @@ export function makeDocumentService(
       fault(409, '小说收据不匹配。');
     receipt = book;
     if (operation.kind === 'illustrations') {
-      const loadAsset = (path) => {
-        if (!illustrationPath(path)) fault(400, '插图路径无效。');
-        const asset = raw(root + '/' + path);
-        if (!asset) fault(404, '本书插图不存在。');
-        if (path !== 'illustrations/' + sha(bytes(asset.text)) + '.json') fault(409, '插图校验失败。');
-        try {
-          return imageAsset(asset.text);
-        } catch (error) {
-          fault(400, error.message);
-        }
-      };
       const action = operation.action ?? 'list';
-      if (action === 'read') return loadAsset(operation.imagePath);
+      if (action === 'read') return loadIllustration(operation.imagePath);
       if (action === 'upload') {
         let asset;
         try {
@@ -1288,7 +1289,7 @@ export function makeDocumentService(
           ...(chapter ? { chapter } : {}),
           images: page.map((name) => {
             const imagePath = 'illustrations/' + name,
-              asset = loadAsset(imagePath);
+              asset = loadIllustration(imagePath);
             return { imagePath, label: asset.label, width: asset.width, height: asset.height };
           }),
           nextCursor: start + page.length < paths.length ? page.at(-1) : null,
@@ -1303,7 +1304,7 @@ export function makeDocumentService(
       const current = read(operation.path);
       if (current.hash !== operation.expectedHash)
         fault(409, '正文已更新，未移动插图；请重新读取。', { current });
-      loadAsset(operation.imagePath);
+      loadIllustration(operation.imagePath);
       let text;
       try {
         text = placeIllustration(current.text, { ...operation, remove: action === 'remove' });
@@ -1478,7 +1479,39 @@ export function makeDocumentService(
         // The only writable destination comes from the existing proposal, never
         // from tool arguments. CAS, multipart layout and history share this one
         // native transaction. Only an explicitly final, validated task may commit.
-        save(record.draft, operation.content, operation.expectedHash);
+        let content = operation.content;
+        if (operation.illustrations !== undefined) {
+          const placements = operation.illustrations;
+          if (
+            !record.writing ||
+            operation.complete !== true ||
+            proposalContentScope(record) !== 'document' ||
+            !Array.isArray(placements) ||
+            !placements.length ||
+            placements.length > 32 ||
+            placements.some(
+              (item) =>
+                !illustrationPath(item?.imagePath) ||
+                typeof item.after !== 'string' ||
+                (item.caption !== undefined && typeof item.caption !== 'string'),
+            ) ||
+            new Set(placements.map((item) => item.imagePath)).size !== placements.length
+          )
+            fault(400, '插图仅随完整章文最终提交，图集路径需有效且互不重复。');
+          for (const item of placements) {
+            const image = loadIllustration(item.imagePath);
+            try {
+              content = placeIllustration(content, {
+                imagePath: item.imagePath,
+                after: item.after,
+                caption: item.caption ?? image.label,
+              });
+            } catch (error) {
+              fault(400, error.message);
+            }
+          }
+        }
+        save(record.draft, content, operation.expectedHash);
         if (operation.contentScope !== undefined)
           writeRaw(proposalPath(record.id), JSON.stringify(record, null, 2));
       }
@@ -1555,6 +1588,9 @@ export function makeDocumentService(
         characters: view.draft.text.replace(/\s/g, '').length,
         editable: !published && record.status === 'pending',
         published,
+        ...(published && record.writing
+          ? { chapterIllustrations: illustrationEntries(read(record.target).text).map((entry) => entry.path) }
+          : {}),
         ...(record.writing
           ? {
               contentScope: proposalContentScope(record),

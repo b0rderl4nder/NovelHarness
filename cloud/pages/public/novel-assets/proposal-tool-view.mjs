@@ -143,13 +143,15 @@ export function installProposalToolViews(ctx, React) {
           ? '候选图已存入本书图集'
           : result?.status === 'queued'
             ? 'ComfyUI 正在排队或生成'
-            : result?.status === 'unknown'
-              ? '提交结果未确认，请在 ComfyUI 核对队列'
-              : presets
-                ? '可用生图预设'
-                : references
-                  ? `当前对话有 ${references.length} 张可引用的图片`
-                  : '暂无可预览的插图';
+            : result?.status === 'deliver-chapter'
+              ? '先保存本章和已生成的插图'
+              : result?.status === 'unknown'
+                ? '提交结果未确认，请在 ComfyUI 核对队列'
+                : presets
+                  ? '可用生图预设'
+                  : references
+                    ? `当前对话有 ${references.length} 张可引用的图片`
+                    : '暂无可预览的插图';
     return h(
       'section',
       { className: 'novel-proposal-tool', 'aria-label': 'AI 生图执行详情' },

@@ -31,6 +31,20 @@ export async function apply(ctx, config) {
   instance[Symbol('workspace')] = { ready: async () => {}, provider: () => storage.fs, db: storage.db };
   installProposalTools(instance);
   installWritingRunTools(instance);
+  if (config.comfyConfig) {
+    const [{ installComfyTools }, { installNovelTools }, { makeDocumentService }, { imageAsset }] =
+      await Promise.all([
+        import('./comfy-tools.mjs'),
+        load('novel-tools'),
+        load('novel-documents'),
+        load('shared/illustrations'),
+      ]);
+    installComfyTools(
+      instance,
+      { fs: storage.fs, installNovelTools, makeDocumentService, imageAsset },
+      config.comfyConfig,
+    );
+  }
   // Like the existing Edge role, read CURRENT registry metadata per assembly.
   // It is not a cached system identity, inferred from old messages, or another
   // book catalog. A synchronous registry read keeps directory/title coherent.

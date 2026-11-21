@@ -1576,6 +1576,21 @@ fieldset.novel-canon-detail {
   max-height: 300px;
   overflow: auto;
 }
+.novel-generated-image {
+  margin: 8px 0;
+}
+.novel-generated-image img {
+  display: block;
+  max-width: min(100%, 260px);
+  max-height: 300px;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+}
+.novel-generated-image figcaption {
+  margin-top: 4px;
+  color: var(--dsw-alias-label-secondary);
+}
 .novel-import-filters {
   display: flex;
   gap: 10px;

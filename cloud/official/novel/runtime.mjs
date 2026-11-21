@@ -176,6 +176,9 @@ export async function startOfficialNovel({
       '      inject: [novelStorage, workingDirectory, systemPrompt, agents, workspaceRegistry]',
       '      config:',
       '        runKey: isolated-novel-checkpoint-key-not-a-production-secret',
+      ...(!anonymous && (production || shared || staging) && process.env.NOVEL_COMFY_CONFIG
+        ? ['        comfyConfig: ' + JSON.stringify(resolve(process.env.NOVEL_COMFY_CONFIG))]
+        : []),
       '- id: fs-sandbox',
       '  disabled: true',
       '- id: subprocess',

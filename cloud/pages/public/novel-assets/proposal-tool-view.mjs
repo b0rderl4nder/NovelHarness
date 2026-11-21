@@ -50,6 +50,39 @@ export function proposalToolModel(toolName, block) {
   };
 }
 
+function resultImages(result, cwd) {
+  if (
+    !/^b-[a-f0-9]{32}$/.test(result?.bookId ?? '') ||
+    cwd !== '/workspace/novels/' + result.bookId ||
+    !Array.isArray(result.images)
+  )
+    return [];
+  return result.images
+    .filter((item) => illustrationPath(item?.imagePath))
+    .slice(0, 4)
+    .map((item) => ({ ...item, bookId: result.bookId }));
+}
+
+export function turnImages(snapshot, turn, cwd) {
+  const images = new Map();
+  const visit = (block) => {
+    if (!block) return;
+    const name = block.call?.name ?? block.name;
+    if (name === 'novel_generate_image' && 'kind' in block && !block.isError) {
+      const { result } = proposalToolModel(name, block);
+      for (const image of resultImages(result, cwd)) {
+        if (!images.has(image.imagePath)) images.set(image.imagePath, image);
+      }
+    }
+    for (const child of block.subCalls ?? []) visit(child);
+  };
+  for (const key of snapshot?.locations.getTurn(turn) ?? []) {
+    const node = snapshot.nodes.get(key);
+    if (node?.kind === 'tool-call') visit(node.data.root);
+  }
+  return [...images.values()];
+}
+
 export function installProposalToolViews(ctx, React) {
   const h = React.createElement,
     ProseEditor = createProseEditor(React);
@@ -97,14 +130,11 @@ export function installProposalToolViews(ctx, React) {
       : h('p', { role: 'status' }, state.error ? '预览加载失败，可在本书图集查看。' : '正在载入插图…');
   }
   function GeneratedImageToolView({ toolName, block, cwd }) {
+    if (block.call?.args?.text?.('action') === 'inspect') return null;
     const { result, settled, failed, raw } = proposalToolModel(toolName, block);
     const presets = Array.isArray(result?.presets) ? result.presets : null;
-    const images =
-      /^b-[a-f0-9]{32}$/.test(result?.bookId ?? '') &&
-      cwd === '/workspace/novels/' + result.bookId &&
-      Array.isArray(result.images)
-        ? result.images.filter((item) => illustrationPath(item?.imagePath)).slice(0, 4)
-        : [];
+    const references = Array.isArray(result?.references) ? result.references : null;
+    const images = resultImages(result, cwd);
     const message = failed
       ? '插图生成失败'
       : !settled
@@ -117,22 +147,28 @@ export function installProposalToolViews(ctx, React) {
               ? '提交结果未确认，请在 ComfyUI 核对队列'
               : presets
                 ? '可用生图预设'
-                : '暂无可预览的插图';
+                : references
+                  ? `当前对话有 ${references.length} 张可引用的图片`
+                  : '暂无可预览的插图';
     return h(
       'section',
-      { className: 'novel-proposal-tool', 'aria-label': 'AI 插图结果' },
+      { className: 'novel-proposal-tool', 'aria-label': 'AI 生图执行详情' },
       h('p', { role: 'status' }, message),
       presets ? h('p', null, presets.map((preset) => preset.label).join(' · ')) : null,
-      ...images.map((image) => h(GeneratedImage, { key: image.imagePath, bookId: result.bookId, ...image })),
-      images.length && result.preset
-        ? h(
-            'small',
-            null,
-            result.preset + (Number.isSafeInteger(result.seed) ? ' · 种子 ' + result.seed : ''),
-          )
-        : null,
       failed && raw ? h('details', null, h('summary', null, '查看原因'), h('pre', null, raw)) : null,
     );
+  }
+  function GeneratedImagesTail({ turn, chat, sessionId }) {
+    const snapshot = React.useSyncExternalStore(chat.subscribe, chat.getSnapshot);
+    const catalog = React.useSyncExternalStore(ctx.sessions.list.subscribe, ctx.sessions.list.getSnapshot);
+    const images = turnImages(snapshot, turn.turn, catalog.byId[sessionId]?.cwd);
+    return images.length
+      ? h(
+          'section',
+          { className: 'novel-proposal-tool', 'aria-label': 'AI 插图结果' },
+          ...images.map((image) => h(GeneratedImage, { key: image.imagePath, ...image })),
+        )
+      : null;
   }
   function ProposalToolView({ toolName, block, useDisclosure }) {
     const model = proposalToolModel(toolName, block);
@@ -192,5 +228,20 @@ export function installProposalToolViews(ctx, React) {
         );
       }),
     'novel: original native proposal tool presentation',
+  );
+  ctx.effect(() =>
+    ctx.slots.inject('conversation.chat.turnTail', () =>
+      ctx.slots.register(
+        {
+          name: 'conversation.chat.turnTail',
+          id: 'novel-generated-images',
+          inject: (sessionId) => ({
+            sessionId,
+            chat: ctx.uiConversation.binding(ctx.sessions.binding(sessionId)).target('chat'),
+          }),
+        },
+        GeneratedImagesTail,
+      ),
+    ),
   );
 }

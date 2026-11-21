@@ -4,7 +4,15 @@ import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 export const name = 'novel-authoring-tools';
-export const inject = ['novelStorage', 'workingDirectory', 'systemPrompt', 'agents', 'workspaceRegistry'];
+export const inject = [
+  'novelStorage',
+  'workingDirectory',
+  'systemPrompt',
+  'agents',
+  'workspaceRegistry',
+  'sessionQuery',
+  'attachments',
+];
 export async function apply(ctx, config) {
   const worker = resolve('data/official-validation/integration/baseline/worker');
   const load = (name) => import(pathToFileURL(resolve(worker, name + '.mjs')));
@@ -41,7 +49,14 @@ export async function apply(ctx, config) {
       ]);
     installComfyTools(
       instance,
-      { fs: storage.fs, installNovelTools, makeDocumentService, imageAsset },
+      {
+        fs: storage.fs,
+        installNovelTools,
+        makeDocumentService,
+        imageAsset,
+        sessionQuery: ctx.get('sessionQuery'),
+        attachments: ctx.get('attachments'),
+      },
       config.comfyConfig,
     );
   }
@@ -67,6 +82,12 @@ export async function apply(ctx, config) {
         id: root.slice('/workspace/novels/'.length),
         root,
         ...(typeof title === 'string' && title.trim() ? { title } : {}),
+        ...(config.comfyConfig
+          ? {
+              imageTool:
+                '画图、改图和参考图生成由 novel_generate_image 执行。对话图片是原生附件，可以直接用 chat:latest，无需在工作区找图片。',
+            }
+          : {}),
       });
     },
   });

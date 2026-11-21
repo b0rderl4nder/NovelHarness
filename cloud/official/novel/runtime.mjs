@@ -173,10 +173,10 @@ export async function startOfficialNovel({
       '      name: novel-harness-bridge',
       '    - id: novel-authoring-tools',
       '      name: ' + file('tools'),
-      '      inject: [novelStorage, workingDirectory, systemPrompt, agents, workspaceRegistry]',
+      '      inject: [novelStorage, workingDirectory, systemPrompt, agents, workspaceRegistry, sessionQuery, attachments]',
       '      config:',
       '        runKey: isolated-novel-checkpoint-key-not-a-production-secret',
-      ...(!anonymous && (production || shared || staging) && process.env.NOVEL_COMFY_CONFIG
+      ...(!anonymous && (production || shared || staging || fixtureEndpoint) && process.env.NOVEL_COMFY_CONFIG
         ? ['        comfyConfig: ' + JSON.stringify(resolve(process.env.NOVEL_COMFY_CONFIG))]
         : []),
       '- id: fs-sandbox',

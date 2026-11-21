@@ -10,22 +10,31 @@
   "workflow": "illustration.api.json",
   "bindings": {
     "prompt": [["5", "positive"]],
-    "seed": [["6", "seed"]]
+    "seed": [["6", "seed"]],
+    "negativePrompt": [["5", "negative"]],
+    "steps": [["6", "steps"]],
+    "sampler": [["6", "sampler_name"]]
+  },
+  "controls": {
+    "steps": { "min": 16, "max": 42, "step": 1 },
+    "sampler": { "choices": ["euler", "er_sde"] }
   }
 }
 ```
 
-`workflow` 相对于配置文件，节点编号和输入名按实际模板填写。`prompt` 必填，`seed` 可选，绑定时每次自动取新种子。可用 `values` 填模板所需的固定参数。模板支持图生图时，可绑定 `reference` 和可选的布尔开关 `useReference`。参考图从当前作品的图集读取，无参考图时沿用模板或 `values` 中的占位图。工作流需有保存图片的输出节点。非 WebP 或超出图集限制的输出通过 FFmpeg 转换，可在 `ffmpeg` 指定路径。
+`workflow` 相对于配置文件，节点编号和输入名按实际模板填写。`prompt` 必填，`seed` 可选，助手省略种子时自动取新值。可用 `values` 填模板所需的固定参数。模板支持图生图时，可绑定 `reference` 和可选的布尔开关 `useReference`。需要参考图才能运行的工作流设置 `requiresReference: true`；可选参考图的工作流可在 `values` 指定占位图。工作流需有保存图片的输出节点。非 WebP 或超出图集限制的输出通过 FFmpeg 转换，可在 `ffmpeg` 指定路径。
 
-启动服务后，可在书内对话说「把这一幕画成插图，重点画人物的神态和站台的夜光」。候选图会显示在对话并进入本书图集。长任务会先返回排队状态，你可以在对话里请助手继续查询。明确要求插到某段后时，助手可用现有插图工具放置。
+启动服务后，在书内和助手对话即可。可以直接说「把这一幕画成插图」，也可以在原对话用加号上传图片，再说「看一下这张图，把屋顶换成钴蓝色，保留构图」。助手选择工作流、撰写提示词并发起任务。生成时可以继续浏览书稿，完成后图片显示在对话并进入本书图集。超过工具等待时间的任务会返回任务号，可在对话里请助手继续查询。明确要求插到某段后时，助手可用现有插图工具放置。
 
 ### 在对话里换工作流和画面
 
-主机可在同一配置写入 `defaultPreset` 和 `presets`。将上方每套工作流的 `workflow`、`bindings`、`values` 放进 `presets` 的对应项，`comfy` 仍在外层。每项可设 `label`。原单工作流配置会显示为 `default`。使用 `novel_generate_image` 的 `presets` 操作查看可用预设及是否支持版式、参考图或种子。
+主机可在同一配置写入 `defaultPreset` 和 `presets`。将上方每套工作流的 `workflow`、`bindings`、`values` 放进 `presets` 的对应项，`comfy` 仍在外层。每项可设 `label`。原单工作流配置会显示为 `default`。传了参考图但未指定工作流时，工具会选择支持参考图的默认工作流，也可以用 `defaultReferencePreset` 明确指定。助手可通过 `presets` 查看实际能力。
 
-- `style`、`composition`、`atmosphere` 分别指定画风、镜头和氛围，例如「电影感写实、近景侧拍、傍晚逆光」。如果要求切换模型或 LoRA，选对应预设。改变文字描述会影响成图，实际权重由该预设决定。
+- 正向 `prompt` 由对话助手撰写。服务按助手选择的 `style`、`composition`、`atmosphere` 和 `regions` 绘图参数转换格式。工作流绑定 `negativePrompt` 后，助手可以另填 `negative_prompt`。旧配置的 `promptPrefix` 不会加入新任务。
+- 在 `bindings` 映射实际节点，再用 `controls` 声明助手可用的范围和枚举。步数、CFG、采样器、调度器、尺寸、降噪和 LoRA 强度都可按工作流开放。助手通过预设列表看到范围与默认值；未指定时用工作流或 `values` 的默认值。更换模型通常要选对应工作流。
+- 图生图工作流同时开放带 `step` 的 `width` 和 `height` 时，默认在允许范围内沿用参考图的比例。助手仍可明确设置尺寸，未指定的另一边会尽量维持参考图比例。
 - MOSS 版式预设设置 `layout: [宽, 高]`，与实际工作流尺寸一致。`regions` 用 `[左, 上, 右, 下]` 的 0–1000 相对坐标标注人、物和文字。文字框另给逐字文本。服务会换算为 MOSS 的中心像素坐标。
-- 想让角色换动作或机位时，选支持参考图的编辑预设，并沿用本书母图。模型可能出现脸型或服装细节变化，候选图需要核对。
+- `reference` 可选 `chat:latest`、`references` 返回的当前对话图片 ID，或本书图集路径。图生图需要有参考图输入的 ComfyUI 工作流。助手理解画面还需要当前 DSH 模型支持视觉输入。对话工具每次向工作流传一张参考图，生成结果也可从本书图集中继续引用。助手可用 `inspect` 查看图集图片并分析成图。
 - 固定 `seed` 可在相同工作流和输入下复查。查询结果会带实际预设和种子。暂未完成的任务需要原预设才能继续取图。
 
 ## 命令行批量生成

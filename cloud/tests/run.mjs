@@ -69,3 +69,4 @@ import './proposal-tool-view.test.mjs';
 import './proposal-presentation.test.mjs';
 import './pre-step-compat.test.mjs';
 import './purge-authoring.test.mjs';
+import './novel-comfy.test.mjs';

@@ -101,6 +101,7 @@ export async function loadComfyPresets(path) {
           bindings = {},
           values = {},
           layout = null,
+          guidance = '',
           promptPrefix = '',
           requiresReference = false,
         } = entry;
@@ -114,6 +115,7 @@ export async function loadComfyPresets(path) {
           throw new Error('MOSS 版式预设需要以 16 像素为单位的实际画幅。');
         if (typeof promptPrefix !== 'string' || promptPrefix.length > 1000)
           throw new Error('ComfyUI 预设提示前缀无效。');
+        if (typeof guidance !== 'string' || guidance.length > 800) throw new Error('ComfyUI 预设说明无效。');
         if (requiresReference && !Object.hasOwn(bindings, 'reference'))
           throw new Error('强制参考图的预设缺少 reference 绑定。');
         const controls = readControls(template, bindings, values, entry.controls);
@@ -132,6 +134,7 @@ export async function loadComfyPresets(path) {
             bindings,
             values,
             layout,
+            guidance: guidance.trim(),
             controls,
             requiresReference,
             revision,

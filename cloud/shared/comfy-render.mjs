@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
+import { ILLUSTRATION_ENCODING } from '../worker/shared/illustrations.mjs';
 
 const exec = promisify(execFile);
 const checked = (condition, message) => {
@@ -83,10 +84,14 @@ export async function encodeIllustration(ffmpeg, source, scratch, pack, signal) 
       // Re-encode images larger than the manuscript's import limits.
     }
   }
-  for (const side of [1600, 1200, 800]) {
+  for (const [side, quality] of ILLUSTRATION_ENCODING) {
     const file = join(scratch, 'edition.webp');
     const filter =
-      "scale=w='min(iw," + side + ")':h='min(ih," + side + ")':force_original_aspect_ratio=decrease";
+      "scale=w='min(iw," +
+      side +
+      ")':h='min(ih," +
+      side +
+      ")':force_original_aspect_ratio=decrease:flags=lanczos";
     await exec(
       ffmpeg,
       [
@@ -109,7 +114,7 @@ export async function encodeIllustration(ffmpeg, source, scratch, pack, signal) 
         '-threads',
         '1',
         '-quality',
-        '78',
+        String(quality),
         file,
       ],
       { timeout: 60000, windowsHide: true, signal },

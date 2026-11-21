@@ -52,7 +52,7 @@ export function installComfyTools(
       {
         name: 'novel_generate_image',
         description:
-          '画图、改图、按参考图生成新图。对话中上传的图片可直接用 reference: "chat:latest"。presets 列出工作流和调参范围，references 列出对话图片。generate 接收你撰写的 prompt，成图自动显示在对话并存入本书图集。要查看图集里的图片内容，用 inspect 和图片路径；要继续改它，可直接用该路径作 reference。queued 用 status 查询；插入正文用 novel_illustration。',
+          '画图、改图、按参考图生成新图。presets 列出工作流、各模型的画面说明和调参范围。按作者要求自行写 prompt，把人物动作、道具位置和取景关系写清楚。generate 成图后自动显示在对话并存入本书图集；需核对时用 inspect 看成图。用 chat:latest、references 列出的对话图片 ID 或本书图集路径作参考。queued 用 status 查询；插入正文用 novel_illustration。',
         parameters: {
           type: 'object',
           properties: {
@@ -227,6 +227,7 @@ export function installComfyTools(
                 seed: Object.hasOwn(preset.bindings, 'seed'),
                 negativePrompt: Object.hasOwn(preset.bindings, 'negativePrompt'),
                 controls: preset.controls,
+                ...(preset.guidance ? { guidance: preset.guidance } : {}),
               })),
             });
           const config = row

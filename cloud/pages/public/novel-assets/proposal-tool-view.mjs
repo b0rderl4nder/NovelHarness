@@ -1,5 +1,7 @@
 import { createProseEditor } from './prose-editor.mjs';
 import { openTaskProposal } from './proposal-navigation.mjs';
+import { makeDocumentClient } from './manuscript-core.mjs';
+import { illustrationPath, imageAsset } from '../../../worker/shared/illustrations.mjs';
 
 // Presentation only, read directly from the ORIGINAL native Tool block and its
 // incremental PartialArguments. No provider stream, copied transcript or draft.
@@ -50,6 +52,62 @@ export function proposalToolModel(toolName, block) {
 export function installProposalToolViews(ctx, React) {
   const h = React.createElement,
     ProseEditor = createProseEditor(React);
+  function GeneratedImage({ bookId, imagePath, label }) {
+    const [state, setState] = React.useState({});
+    React.useEffect(() => {
+      let active = true;
+      makeDocumentClient(bookId)('illustrations', null, { action: 'read', imagePath })
+        .then((value) => {
+          if (active) setState({ asset: imageAsset(JSON.stringify(value)) });
+        })
+        .catch(() => {
+          if (active) setState({ error: true });
+        });
+      return () => {
+        active = false;
+      };
+    }, [bookId, imagePath]);
+    return state.asset
+      ? h(
+          'figure',
+          { className: 'novel-generated-image' },
+          h('img', {
+            src: state.asset.data,
+            alt: label || 'AI 插图',
+            width: state.asset.width,
+            height: state.asset.height,
+          }),
+          label ? h('figcaption', null, label) : null,
+        )
+      : h('p', { role: 'status' }, state.error ? '预览加载失败，可在本书图集查看。' : '正在载入插图…');
+  }
+  function GeneratedImageToolView({ toolName, block, cwd }) {
+    const { result, settled, failed, raw } = proposalToolModel(toolName, block);
+    const images =
+      /^b-[a-f0-9]{32}$/.test(result?.bookId ?? '') &&
+      cwd === '/workspace/novels/' + result.bookId &&
+      Array.isArray(result.images)
+        ? result.images.filter((item) => illustrationPath(item?.imagePath)).slice(0, 4)
+        : [];
+    const message = failed
+      ? '插图生成失败'
+      : !settled
+        ? '正在生成插图…'
+        : images.length
+          ? '候选图已存入本书图集'
+          : result?.status === 'queued'
+            ? 'ComfyUI 正在排队或生成'
+            : result?.status === 'unknown'
+              ? '提交结果未确认，请在 ComfyUI 核对队列'
+              : '暂无可预览的插图';
+    return h(
+      'section',
+      { className: 'novel-proposal-tool', 'aria-label': 'AI 插图结果' },
+      h('p', { role: 'status' }, message),
+      ...images.map((image) => h(GeneratedImage, { key: image.imagePath, bookId: result.bookId, ...image })),
+      failed && raw ? h('details', null, h('summary', null, '查看原因'), h('pre', null, raw)) : null,
+    );
+  }
   function ProposalToolView({ toolName, block, useDisclosure }) {
     const model = proposalToolModel(toolName, block);
     const { expanded, toggle } = useDisclosure();
@@ -102,6 +160,10 @@ export function installProposalToolViews(ctx, React) {
       ctx.slots.inject('tool.call.toolview', function* () {
         for (const key of ['novel_proposal_prepare', 'novel_proposal_inspect', 'novel_proposal_submit'])
           yield ctx.slots.register({ name: 'tool.call.toolview', key }, ProposalToolView);
+        yield ctx.slots.register(
+          { name: 'tool.call.toolview', key: 'novel_generate_image' },
+          GeneratedImageToolView,
+        );
       }),
     'novel: original native proposal tool presentation',
   );

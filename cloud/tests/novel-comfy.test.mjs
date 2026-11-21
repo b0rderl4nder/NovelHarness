@@ -4,10 +4,13 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { bindWorkflow, main } from '../scripts/novel-comfy.mjs';
 import { illustrationEntries, imageAsset } from '../worker/shared/illustrations.mjs';
+import { installComfyTools } from '../official/novel/comfy-tools.mjs';
+import { installNovelTools } from '../worker/novel-tools.mjs';
 
 const sha = (text) => createHash('sha256').update(text).digest('hex');
 const bytes = Buffer.from('UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEADsD+JaQAA3AAAAAA', 'base64');
@@ -25,6 +28,123 @@ const bindings = {
 const novelId = 'b-' + 'a'.repeat(32);
 const chapter = 'chapters/1.md';
 const reference = 'illustrations/' + 'b'.repeat(64) + '.json';
+
+test('book-scoped agent can submit, resume after reload, and publish a candidate without editing prose', async (t) => {
+  const db = new DatabaseSync(':memory:');
+  db.transaction = (run) => () => {
+    db.exec('BEGIN');
+    try {
+      const result = run();
+      db.exec('COMMIT');
+      return result;
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+  };
+  t.after(() => db.close());
+  const dir = await mkdtemp(join(tmpdir(), 'novel-comfy-tool-test-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  let prompts = 0;
+  let ready = false;
+  const server = createServer(async (req, res) => {
+    const url = new URL(req.url, 'http://localhost');
+    const send = (value) => res.end(JSON.stringify(value));
+    if (url.pathname === '/prompt') {
+      prompts++;
+      const data = JSON.parse(await new Response(ReadableStream.from(req)).text());
+      assert.equal(data.prompt['5'].inputs.text, '夜里的灯塔和一束微弱暖光');
+      assert.equal(data.prompt['4'].inputs.image, 'fixture/upload.webp');
+      return send({ prompt_id: 'comfy-receipt' });
+    }
+    if (url.pathname === '/upload/image') {
+      for await (const _chunk of req) {
+        /* drain test reference */
+      }
+      return send({ name: 'upload.webp', subfolder: 'fixture' });
+    }
+    if (url.pathname === '/history/comfy-receipt')
+      return send(
+        ready
+          ? { 'comfy-receipt': { outputs: { 8: { images: [{ type: 'output', filename: 'one.webp' }] } } } }
+          : {},
+      );
+    if (url.pathname === '/view') return res.end(bytes);
+    res.writeHead(404).end();
+  });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  t.after(() => new Promise((done) => server.close(done)));
+  const config = join(dir, 'tool.json');
+  await writeFile(join(dir, 'workflow.json'), JSON.stringify(template));
+  await writeFile(
+    config,
+    JSON.stringify({
+      comfy: 'http://127.0.0.1:' + server.address().port,
+      workflow: 'workflow.json',
+      bindings: { prompt: bindings.script, reference: bindings.ref, seed: bindings.seed },
+    }),
+  );
+  const uploads = [];
+  function tools(book) {
+    const definitions = new Map();
+    const agent = {
+      session: {},
+      ctx: { get: () => ({ register: (tool) => definitions.set(tool.name, tool) }) },
+    };
+    installComfyTools(
+      {
+        ctx: { storage: db },
+        sessions: {
+          context: {
+            on: (_event, listener) => listener({ agent }),
+            get: () => ({ get: () => '/workspace/novels/' + book }),
+          },
+        },
+      },
+      {
+        installNovelTools,
+        imageAsset,
+        makeDocumentService: (_fs, _db, id) => ({
+          run(operation) {
+            assert.equal(id, novelId);
+            assert.equal(operation.kind, 'illustrations');
+            if (operation.action === 'read') {
+              assert.equal(operation.imagePath, reference);
+              return { data: 'data:image/webp;base64,' + bytes.toString('base64') };
+            }
+            assert.equal(operation.action, 'upload');
+            assert.equal(imageAsset(operation.content).label, '灯塔');
+            uploads.push(operation.content);
+            return { imagePath: 'illustrations/' + sha(operation.content) + '.json' };
+          },
+        }),
+      },
+      config,
+      { waitMs: 0 },
+    );
+    return async (args, callId = 'native-call') =>
+      JSON.parse(
+        await definitions
+          .get('novel_generate_image')
+          .execute(args, { agent, signal: new AbortController().signal, callId }),
+      );
+  }
+  const call = tools(novelId);
+  const request = { action: 'generate', prompt: '夜里的灯塔和一束微弱暖光', caption: '灯塔', reference };
+  const queued = await call(request);
+  assert.equal(queued.status, 'queued');
+  assert.equal((await call(request)).jobId, queued.jobId);
+  assert.equal(prompts, 1);
+  const status = { action: 'status', job_id: queued.jobId };
+  await assert.rejects(tools('b-' + 'b'.repeat(32))(status), /找不到本书/);
+  ready = true;
+  const completed = await tools(novelId)(status);
+  assert.equal(completed.status, 'ready');
+  assert.equal(completed.images[0].label, '灯塔');
+  assert.deepEqual(await call(status), completed);
+  assert.equal(uploads.length, 1);
+});
 
 test('the visual bridge binds arbitrary API node inputs and preserves graph edges', () => {
   const graph = bindWorkflow(template, bindings, {

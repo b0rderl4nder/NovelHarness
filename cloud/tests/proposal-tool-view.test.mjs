@@ -45,6 +45,6 @@ test('novel tool views extend only the original keyed tool slot, without replaci
   installProposalToolViews(ctx, {});
   assert.deepEqual(
     registrations.map((r) => r.key),
-    ['novel_proposal_prepare', 'novel_proposal_inspect', 'novel_proposal_submit'],
+    ['novel_proposal_prepare', 'novel_proposal_inspect', 'novel_proposal_submit', 'novel_generate_image'],
   );
 });

@@ -1,9 +1,7 @@
-import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, rm, rmdir, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { promisify } from 'node:util';
 import {
   imageAsset,
   illustrationEntries,
@@ -12,14 +10,14 @@ import {
   insertIllustration,
 } from '../worker/shared/illustrations.mjs';
 import { materialSources } from '../worker/shared/writing-context.mjs';
+import { bindWorkflow, encodeIllustration, endpoint, request, webpSize } from '../shared/comfy-render.mjs';
+export { bindWorkflow, webpSize };
 
-const exec = promisify(execFile);
 const checked = (condition, message) => {
   if (!condition) throw new Error(message);
 };
 const jsonFile = async (path) => JSON.parse(await readFile(path, 'utf8'));
 const saveJson = (path, value) => writeFile(path, JSON.stringify(value, null, 2) + '\n', { flag: 'wx' });
-const own = (object, key) => object && Object.hasOwn(object, key);
 const chapterPath = (path) =>
   typeof path === 'string' &&
   /^chapters\/.+\.(md|txt)$/.test(path) &&
@@ -27,66 +25,6 @@ const chapterPath = (path) =>
   !path.split('/').some((part) => !part || part === '.' || part === '..');
 
 const digest = (value) => createHash('sha256').update(value).digest('hex');
-
-function endpoint(value) {
-  const url = new URL(value);
-  checked(
-    ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password && !url.search && !url.hash,
-    '服务地址必须是没有认证信息的 HTTP(S) 地址。',
-  );
-  if (!url.pathname.endsWith('/')) url.pathname += '/';
-  return url;
-}
-
-export function bindWorkflow(template, bindings, values) {
-  const graph = structuredClone(template);
-  checked(
-    Object.keys(graph).length > 0 &&
-      Object.values(graph).every(
-        (node) => typeof node?.class_type === 'string' && node.inputs && !Array.isArray(node.inputs),
-      ),
-    '请使用 ComfyUI 的 API 格式工作流。',
-  );
-  for (const [key, targets] of Object.entries(bindings)) {
-    checked(own(values, key), '工作流缺少参数 ' + key);
-    checked(Array.isArray(targets) && targets.length, '参数未指定目标节点 ' + key);
-    for (const target of targets) {
-      checked(
-        Array.isArray(target) &&
-          target.length === 2 &&
-          own(graph, target[0]) &&
-          own(graph[target[0]].inputs, target[1]),
-        '工作流参数绑定无效 ' + key,
-      );
-      graph[target[0]].inputs[target[1]] = structuredClone(values[key]);
-    }
-  }
-  return graph;
-}
-
-function headersFor(session, endpoint) {
-  return session ? { cookie: session, origin: endpoint.origin, 'sec-fetch-site': 'same-origin' } : {};
-}
-
-async function request(base, route, { query, data, form, cookie, method, binary = false } = {}) {
-  const url = new URL(route, base);
-  if (query) url.search = new URLSearchParams(query);
-  const response = await fetch(url, {
-    redirect: 'error',
-    method: method ?? (data || form ? 'POST' : 'GET'),
-    headers: { ...headersFor(cookie, base), ...(data ? { 'content-type': 'application/json' } : {}) },
-    body: form ?? (data ? JSON.stringify(data) : undefined),
-    signal: AbortSignal.timeout(30000),
-  });
-  if (!response.ok) {
-    const body = await response.json().catch(() => null);
-    throw new Error(
-      body?.error?.message ??
-        (typeof body?.error === 'string' ? body.error : 'HTTP ' + response.status + ' ' + route),
-    );
-  }
-  return binary ? response : response.json();
-}
 
 export function chapterWithVisuals(document, images, after) {
   const text = document.text;
@@ -128,68 +66,6 @@ function illustrationEnvelope(bytes, label) {
       }),
     ),
   );
-}
-
-async function encodeIllustration(ffmpeg, source, scratch, label) {
-  if (/\.webp$/i.test(source)) {
-    try {
-      return illustrationEnvelope(await readFile(source), label);
-    } catch {
-      // Re-encode images larger than the manuscript's import limits.
-    }
-  }
-  for (const side of [1600, 1200, 800]) {
-    const file = join(scratch, 'edition.webp');
-    const filter =
-      "scale=w='min(iw," + side + ")':h='min(ih," + side + ")':force_original_aspect_ratio=decrease";
-    await exec(
-      ffmpeg,
-      [
-        '-hide_banner',
-        '-loglevel',
-        'error',
-        '-y',
-        '-threads',
-        '1',
-        '-i',
-        source,
-        '-filter_threads',
-        '1',
-        '-vf',
-        filter,
-        '-frames:v',
-        '1',
-        '-c:v',
-        'libwebp',
-        '-threads',
-        '1',
-        '-quality',
-        '78',
-        file,
-      ],
-      { timeout: 60000, windowsHide: true },
-    );
-    try {
-      return illustrationEnvelope(await readFile(file), label);
-    } catch (error) {
-      if (side === 800) throw error;
-    }
-  }
-}
-
-export function webpSize(webp) {
-  checked(
-    webp.length >= 30 && webp.toString('ascii', 0, 4) === 'RIFF' && webp.toString('ascii', 8, 12) === 'WEBP',
-    '输出 WebP 头无效。',
-  );
-  const type = webp.toString('ascii', 12, 16);
-  if (type === 'VP8X') return [webp.readUIntLE(24, 3) + 1, webp.readUIntLE(27, 3) + 1];
-  if (type === 'VP8L' && webp[20] === 0x2f) {
-    const bits = webp.readUInt32LE(21);
-    return [(bits & 0x3fff) + 1, ((bits >>> 14) & 0x3fff) + 1];
-  }
-  checked(type === 'VP8 ' && webp.readUIntLE(23, 3) === 0x2a019d, '无法解析 WebP 尺寸。');
-  return [webp.readUInt16LE(26) & 0x3fff, webp.readUInt16LE(28) & 0x3fff];
 }
 
 function outputImages(response, folder, index) {
@@ -281,7 +157,7 @@ export async function main([action, configPath], env = process.env) {
         continue;
       }
       for (const [key, reference] of Object.entries(entries[i].references ?? {})) {
-        checked(own(config.bindings, key), '参考图缺少绑定 ' + key);
+        checked(Object.hasOwn(config.bindings, key), '参考图缺少绑定 ' + key);
         const form = new FormData();
         if (illustrationPath(reference)) {
           const asset = await novelRequest('GET', 'illustrations', { action: 'read', imagePath: reference });
@@ -346,7 +222,12 @@ export async function main([action, configPath], env = process.env) {
   try {
     for (const { file, label = '' } of config.publish) {
       checked(typeof file === 'string' && basename(file) === file, '发布图片必须来自任务输出目录。');
-      const content = await encodeIllustration(config.ffmpeg ?? 'ffmpeg', join(work, file), scratch, label);
+      const content = await encodeIllustration(
+        config.ffmpeg ?? 'ffmpeg',
+        join(work, file),
+        scratch,
+        (bytes) => illustrationEnvelope(bytes, label),
+      );
       const imagePath = 'illustrations/' + digest(content) + '.json';
       if (!images.some((item) => item.imagePath === imagePath)) images.push({ imagePath, label, content });
     }

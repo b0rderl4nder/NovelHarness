@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   proposalToolModel,
   installProposalToolViews,
+  turnImages,
 } from '../pages/public/novel-assets/proposal-tool-view.mjs';
 
 test('live candidate presentation reads native incremental arguments and never treats partial or failed calls as saved', () => {
@@ -28,14 +29,13 @@ test('live candidate presentation reads native incremental arguments and never t
   assert.doesNotMatch(proposalToolModel('novel_proposal_submit', { ...saved, content: [] }).label, /已保存/);
 });
 
-test('novel tool views extend only the original keyed tool slot, without replacing the conversation or creating a new event source', () => {
+test('novel views register native tool details and one turn result entry', () => {
   const registrations = [];
   const ctx = {
     effect: (fn) => fn(),
     slots: {
       inject: (name, fn) => {
-        assert.equal(name, 'tool.call.toolview');
-        return [...fn()];
+        return name === 'tool.call.toolview' ? [...fn()] : fn();
       },
       register: (options) => {
         registrations.push(options);
@@ -44,49 +44,67 @@ test('novel tool views extend only the original keyed tool slot, without replaci
   };
   installProposalToolViews(ctx, {});
   assert.deepEqual(
-    registrations.map((r) => r.key),
-    ['novel_proposal_prepare', 'novel_proposal_inspect', 'novel_proposal_submit', 'novel_generate_image'],
+    registrations.map((r) => r.key ?? r.id),
+    [
+      'novel_proposal_prepare',
+      'novel_proposal_inspect',
+      'novel_proposal_submit',
+      'novel_generate_image',
+      'novel-generated-images',
+    ],
   );
 });
 
 test('a generated thumbnail uses the stored asset and reports its intrinsic dimensions', () => {
-  let ToolView;
+  let Tail;
+  const bookId = 'b-' + 'a'.repeat(32);
+  const cwd = '/workspace/novels/' + bookId;
   const asset = { data: 'data:image/webp;base64,fixture', width: 1024, height: 640 };
   const React = {
     createElement: (type, props, ...children) => ({ type, props, children }),
     useState: () => [{ asset }],
     useRef: () => ({ current: null }),
     useEffect: () => {},
+    useSyncExternalStore: (_subscribe, snapshot) => snapshot(),
   };
   installProposalToolViews(
     {
       effect: (fn) => fn(),
+      sessions: { list: { getSnapshot: () => ({ byId: { sample: { cwd } } }) } },
       slots: {
-        inject: (_name, register) => [...register()],
-        register: ({ key }, component) => {
-          if (key === 'novel_generate_image') ToolView = component;
+        inject: (name, register) => (name === 'tool.call.toolview' ? [...register()] : register()),
+        register: ({ id }, component) => {
+          if (id === 'novel-generated-images') Tail = component;
         },
       },
     },
     React,
   );
-  const bookId = 'b-' + 'a'.repeat(32);
-  const tool = ToolView({
-    toolName: 'novel_generate_image',
-    cwd: '/workspace/novels/' + bookId,
-    block: {
-      kind: 'tool-result',
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify({
-            bookId,
-            images: [{ imagePath: 'illustrations/' + '1'.repeat(64) + '.json', label: '票务窗口' }],
-          }),
-        },
-      ],
-    },
-  });
+  const root = {
+    kind: 'tool-result',
+    call: { name: 'novel_generate_image' },
+    content: [
+      {
+        type: 'text',
+        text: JSON.stringify({
+          bookId,
+          images: [{ imagePath: 'illustrations/' + '1'.repeat(64) + '.json', label: '票务窗口' }],
+        }),
+      },
+    ],
+  };
+  const call = { kind: 'tool-call', data: { root } };
+  const snapshot = {
+    locations: { getTurn: (turn) => (turn === 1 ? ['a', 'b'] : []) },
+    nodes: new Map([
+      ['a', call],
+      ['b', call],
+    ]),
+  };
+  assert.deepEqual(turnImages(snapshot, 1, '/workspace/novels/other'), []);
+  assert.deepEqual(turnImages(snapshot, 2, cwd), []);
+  const tool = Tail({ turn: { turn: 1 }, sessionId: 'sample', chat: { getSnapshot: () => snapshot } });
+  assert.equal(tool.children.length, 1);
   const candidate = tool.children.find((child) => typeof child?.type === 'function');
   const figure = candidate.type(candidate.props);
   const [trigger, caption] = figure.children;

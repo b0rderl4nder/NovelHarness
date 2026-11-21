@@ -11,14 +11,14 @@ import { bindWorkflow, main } from '../scripts/novel-comfy.mjs';
 import { illustrationEntries, imageAsset } from '../worker/shared/illustrations.mjs';
 import { installComfyTools } from '../official/novel/comfy-tools.mjs';
 import { installNovelTools } from '../worker/novel-tools.mjs';
-import { compileVisualPrompt } from '../official/novel/comfy-presets.mjs';
+import { compileVisualPrompt, referenceCanvas } from '../official/novel/comfy-presets.mjs';
 
 const sha = (text) => createHash('sha256').update(text).digest('hex');
 const bytes = Buffer.from('UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEADsD+JaQAA3AAAAAA', 'base64');
 const template = {
   5: { class_type: 'MyLayoutOrTextEncoder', inputs: { text: '', images: ['4', 0] } },
   4: { class_type: 'LoadImage', inputs: { image: 'example.png' } },
-  6: { class_type: 'Sampler', inputs: { seed: 0, style: '' } },
+  6: { class_type: 'Sampler', inputs: { seed: 0, style: '', width: 1024 } },
 };
 const bindings = {
   script: [['5', 'text']],
@@ -31,23 +31,36 @@ const chapter = 'chapters/1.md';
 const reference = 'illustrations/' + 'b'.repeat(64) + '.json';
 
 test('book-scoped agent can submit, resume after reload, and publish a candidate without editing prose', async (t) => {
-  const db = new DatabaseSync(':memory:');
-  db.transaction = (run) => () => {
-    db.exec('BEGIN');
-    try {
-      const result = run();
-      db.exec('COMMIT');
-      return result;
-    } catch (error) {
-      db.exec('ROLLBACK');
-      throw error;
-    }
+  const raw = new DatabaseSync(':memory:');
+  const db = {
+    run: (sql, ...args) => raw.prepare(sql).run(...args),
+    all: (sql, ...args) => raw.prepare(sql).all(...args),
+    one: (sql, ...args) => raw.prepare(sql).get(...args),
+    transactionSync(run) {
+      raw.exec('BEGIN');
+      try {
+        const result = run();
+        raw.exec('COMMIT');
+        return result;
+      } catch (error) {
+        raw.exec('ROLLBACK');
+        throw error;
+      }
+    },
   };
-  t.after(() => db.close());
+  t.after(() => raw.close());
   const dir = await mkdtemp(join(tmpdir(), 'novel-comfy-tool-test-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
   let prompts = 0;
   const rendered = [];
+  const referenceUploads = [];
+  const chatImage = {
+    attachmentId: 'chat-digest',
+    mediaType: 'image/png',
+    name: '图.png',
+    width: 32,
+    height: 32,
+  };
   let ready = false;
   const server = createServer(async (req, res) => {
     const url = new URL(req.url, 'http://localhost');
@@ -59,9 +72,8 @@ test('book-scoped agent can submit, resume after reload, and publish a candidate
       return send({ prompt_id: 'comfy-receipt' });
     }
     if (url.pathname === '/upload/image') {
-      for await (const _chunk of req) {
-        /* drain test reference */
-      }
+      const payload = Buffer.from(await new Response(ReadableStream.from(req)).arrayBuffer());
+      referenceUploads.push(payload);
       return send({ name: 'upload.webp', subfolder: 'fixture' });
     }
     if (url.pathname === '/history/comfy-receipt')
@@ -90,7 +102,7 @@ test('book-scoped agent can submit, resume after reload, and publish a candidate
   function tools(book, configPath = config) {
     const definitions = new Map();
     const agent = {
-      session: {},
+      session: { id: book },
       ctx: { get: () => ({ register: (tool) => definitions.set(tool.name, tool) }) },
     };
     installComfyTools(
@@ -106,6 +118,37 @@ test('book-scoped agent can submit, resume after reload, and publish a candidate
       {
         installNovelTools,
         imageAsset,
+        sessionQuery: {
+          readSession(session) {
+            return {
+              events:
+                session === novelId
+                  ? [
+                      {
+                        type: 'tool/result',
+                        data: {
+                          content: [
+                            { type: 'image', attachment: { ...chatImage, attachmentId: 'tool-only' } },
+                          ],
+                        },
+                      },
+                      { type: 'user/message', data: { content: [{ type: 'image', attachment: chatImage }] } },
+                    ]
+                  : [],
+            };
+          },
+        },
+        attachments: {
+          readImage: (ref) => {
+            assert.equal(ref, chatImage);
+            return { data: bytes };
+          },
+          saveImage({ data, mediaType }) {
+            assert.deepEqual(data, bytes);
+            assert.equal(mediaType, 'image/webp');
+            return { ...chatImage, mediaType, attachmentId: 'saved-gallery-image' };
+          },
+        },
         makeDocumentService: (_fs, _db, id) => ({
           run(operation) {
             assert.equal(id, novelId);
@@ -133,6 +176,8 @@ test('book-scoped agent can submit, resume after reload, and publish a candidate
   }
   const call = tools(novelId);
   const request = { action: 'generate', prompt: '夜里的灯塔和一束微弱暖光', caption: '灯塔', reference };
+  const inspected = await call({ action: 'inspect', reference }, 'inspect');
+  assert.equal(inspected.attachment.attachmentId, 'saved-gallery-image');
   const queued = await call(request);
   assert.equal(queued.status, 'queued');
   assert.equal((await call(request)).jobId, queued.jobId);
@@ -160,7 +205,14 @@ test('book-scoped agent can submit, resume after reload, and publish a candidate
         paint: { workflow: 'workflow.json', bindings: { prompt: bindings.script } },
         layout: {
           workflow: 'workflow.json',
-          bindings: { prompt: bindings.script, seed: bindings.seed },
+          bindings: {
+            prompt: bindings.script,
+            seed: bindings.seed,
+            reference: bindings.ref,
+            width: [['6', 'width']],
+            negativePrompt: bindings.style,
+          },
+          controls: { width: { min: 512, max: 1280, step: 16 } },
           layout: [1024, 640],
         },
       },
@@ -169,7 +221,22 @@ test('book-scoped agent can submit, resume after reload, and publish a candidate
   const profiled = tools(novelId, multi);
   const advertised = await profiled({ action: 'presets' });
   assert.equal(advertised.defaultPreset, 'paint');
+  assert.equal(advertised.defaultReferencePreset, 'layout');
   assert.deepEqual(advertised.presets.find((item) => item.id === 'layout').layout, [1024, 640]);
+  const references = await profiled({ action: 'references' });
+  assert.deepEqual(references.references, [
+    { id: 'chat:chat-digest', name: '图.png', width: 32, height: 32 },
+  ]);
+  const editArgs = { action: 'generate', preset: 'layout', prompt: '换一盏灯', caption: '灯塔' };
+  await assert.rejects(
+    tools('b-' + 'b'.repeat(32), multi)({ ...editArgs, reference: references.references[0].id }, 'foreign'),
+    /当前对话没有/,
+  );
+  await assert.rejects(profiled({ ...editArgs, reference: 'chat:tool-only' }, 'tool-output'), /当前对话没有/);
+  await assert.rejects(
+    profiled({ ...editArgs, adjustments: [{ name: 'width', number: 1025 }] }, 'bad-width'),
+    /超出/,
+  );
   await assert.rejects(
     profiled({ action: 'generate', prompt: '灯塔', seed: 0 }, 'no-seed'),
     /不支持固定种子/,
@@ -177,8 +244,10 @@ test('book-scoped agent can submit, resume after reload, and publish a candidate
   const selected = await profiled(
     {
       action: 'generate',
-      preset: 'layout',
       seed: 0,
+      reference: 'chat:latest',
+      adjustments: [{ name: 'width', number: 1152 }],
+      negative_prompt: '水印',
       prompt: '灯塔',
       caption: '灯塔',
       atmosphere: '暖灯与海雾',
@@ -190,7 +259,13 @@ test('book-scoped agent can submit, resume after reload, and publish a candidate
   assert.equal(selected.preset, 'layout');
   assert.equal(rendered.length, 2);
   assert.equal(rendered[1]['6'].inputs.seed, 0);
+  assert.equal(rendered[1]['6'].inputs.width, 1152);
+  assert.equal(rendered[1]['6'].inputs.style, '水印');
+  assert.match(referenceUploads[1].toString('latin1'), /Content-Type: image\/png/i);
+  assert.ok(referenceUploads[1].includes(bytes));
+  assert.deepEqual(selected.adjustments, { width: 1152 });
   assert.equal(JSON.parse(rendered[1]['5'].inputs.text).items[0].caption, '左边灯塔');
+  assert.equal(JSON.parse(rendered[1]['5'].inputs.text).items[0].bbox[1], -530);
   assert.match(JSON.parse(rendered[1]['5'].inputs.text).summary.caption, /暖灯与海雾/);
 });
 
@@ -207,7 +282,8 @@ test('MOSS regions compile into centered pixel boxes while keeping style, shot a
   };
   const preset = { layout: [1024, 640], promptPrefix: 'fixture\n' };
   const compiled = compileVisualPrompt(preset, args);
-  const body = JSON.parse(compiled.slice('fixture\n'.length));
+  assert.equal(compileVisualPrompt(preset, { prompt: '  仅由助手撰写  ' }), '  仅由助手撰写  ');
+  const body = JSON.parse(compiled);
   assert.equal(body.summary.canvas, 'landscape');
   assert.match(
     body.summary.caption,
@@ -227,6 +303,19 @@ test('MOSS regions compile into centered pixel boxes while keeping style, shot a
       compileVisualPrompt(preset, { ...args, regions: [{ ...args.regions[0], box: [500, 0, 400, 500] }] }),
     /位置框无效/,
   );
+});
+
+test('reference edits retain the input ratio when the workflow exposes both canvas dimensions', () => {
+  const size = { width: 768, height: 512 };
+  const rule = { min: 384, max: 1280, step: 16 };
+  const controls = { width: rule, height: rule };
+  assert.deepEqual(referenceCanvas(controls, {}, size), size);
+  assert.deepEqual(referenceCanvas(controls, { width: 1152 }, size), { width: 1152, height: 768 });
+  assert.deepEqual(referenceCanvas(controls, {}, { width: 1920, height: 1280 }), {
+    width: 1280,
+    height: 848,
+  });
+  assert.deepEqual(referenceCanvas({ width: rule }, {}, size), {});
 });
 
 test('the visual bridge binds arbitrary API node inputs and preserves graph edges', () => {

@@ -1,0 +1,47 @@
+{
+  "1": {
+    "class_type": "UNETLoader",
+    "inputs": { "unet_name": "anima-base-v1.0.safetensors", "weight_dtype": "default" }
+  },
+  "2": {
+    "class_type": "CLIPLoader",
+    "inputs": { "clip_name": "qwen_3_06b_base.safetensors", "type": "stable_diffusion" }
+  },
+  "3": { "class_type": "VAELoader", "inputs": { "vae_name": "qwen_image_vae.safetensors" } },
+  "4": { "class_type": "CLIPTextEncode", "inputs": { "clip": ["2", 0], "text": "" } },
+  "5": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "clip": ["2", 0],
+      "text": "worst quality, low quality, score_1, score_2, score_3, blurry, jpeg artifacts, watermark, text overlay, duplicated person, malformed hands, extra fingers, extra limbs"
+    }
+  },
+  "6": { "class_type": "EmptyLatentImage", "inputs": { "width": 1024, "height": 1344, "batch_size": 1 } },
+  "7": {
+    "class_type": "KSampler",
+    "inputs": {
+      "model": ["1", 0],
+      "positive": ["4", 0],
+      "negative": ["5", 0],
+      "latent_image": ["6", 0],
+      "seed": 0,
+      "steps": 32,
+      "cfg": 4.5,
+      "sampler_name": "er_sde",
+      "scheduler": "simple",
+      "denoise": 1
+    }
+  },
+  "8": { "class_type": "VAEDecode", "inputs": { "samples": ["7", 0], "vae": ["3", 0] } },
+  "9": {
+    "class_type": "SaveAnimatedWEBP",
+    "inputs": {
+      "images": ["8", 0],
+      "filename_prefix": "NovelHarness/Anima",
+      "fps": 1,
+      "lossless": false,
+      "quality": 94,
+      "method": "slowest"
+    }
+  }
+}

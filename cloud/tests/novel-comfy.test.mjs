@@ -5,13 +5,14 @@ import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { bindWorkflow, main } from '../scripts/novel-comfy.mjs';
 import { illustrationEntries, imageAsset } from '../worker/shared/illustrations.mjs';
 import { installComfyTools } from '../official/novel/comfy-tools.mjs';
 import { installNovelTools } from '../worker/novel-tools.mjs';
-import { compileVisualPrompt, referenceCanvas } from '../official/novel/comfy-presets.mjs';
+import { compileVisualPrompt, loadComfyPresets, referenceCanvas } from '../official/novel/comfy-presets.mjs';
 
 const sha = (text) => createHash('sha256').update(text).digest('hex');
 const bytes = Buffer.from('UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEADsD+JaQAA3AAAAAA', 'base64');
@@ -202,7 +203,11 @@ test('book-scoped agent can submit, resume after reload, and publish a candidate
       comfy: 'http://127.0.0.1:' + server.address().port,
       defaultPreset: 'paint',
       presets: {
-        paint: { workflow: 'workflow.json', bindings: { prompt: bindings.script } },
+        paint: {
+          workflow: 'workflow.json',
+          bindings: { prompt: bindings.script },
+          guidance: '明确动作和前后景。',
+        },
         layout: {
           workflow: 'workflow.json',
           bindings: {
@@ -221,6 +226,7 @@ test('book-scoped agent can submit, resume after reload, and publish a candidate
   const profiled = tools(novelId, multi);
   const advertised = await profiled({ action: 'presets' });
   assert.equal(advertised.defaultPreset, 'paint');
+  assert.equal(advertised.presets.find((item) => item.id === 'paint').guidance, '明确动作和前后景。');
   assert.equal(advertised.defaultReferencePreset, 'layout');
   assert.deepEqual(advertised.presets.find((item) => item.id === 'layout').layout, [1024, 640]);
   const references = await profiled({ action: 'references' });
@@ -316,6 +322,17 @@ test('reference edits retain the input ratio when the workflow exposes both canv
     height: 848,
   });
   assert.deepEqual(referenceCanvas({ width: rule }, {}, size), {});
+});
+
+test('the Anima character workflow keeps its expected portrait defaults and exposes native controls', async () => {
+  const config = await loadComfyPresets(
+    fileURLToPath(new URL('../shared/workflows/anima-quality.json', import.meta.url)),
+  );
+  const preset = config.presets.get(config.defaultPreset);
+  assert.deepEqual([preset.controls.width.default, preset.controls.height.default], [1024, 1344]);
+  assert.equal(preset.controls.sampler.default, 'er_sde');
+  assert.equal(preset.template['9'].inputs.quality, 94);
+  assert.match(preset.guidance, /动作/);
 });
 
 test('the visual bridge binds arbitrary API node inputs and preserves graph edges', () => {

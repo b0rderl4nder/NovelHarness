@@ -85,7 +85,7 @@ export async function apply(ctx, config) {
         ...(config.comfyConfig
           ? {
               imageTool:
-                '画图、改图和参考图生成由 novel_generate_image 执行。对话图片是原生附件，可以直接用 chat:latest，无需在工作区找图片。',
+                '使用 novel_generate_image 画图和改图。先按任务选择工作流，可通过 presets 查看对应模型的画面说明与参数；对话附件直接用 chat:latest，无需在工作区找文件。',
             }
           : {}),
       });

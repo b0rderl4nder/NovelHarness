@@ -31,11 +31,18 @@
 主机可在同一配置写入 `defaultPreset` 和 `presets`。将上方每套工作流的 `workflow`、`bindings`、`values` 放进 `presets` 的对应项，`comfy` 仍在外层。每项可设 `label`。原单工作流配置会显示为 `default`。传了参考图但未指定工作流时，工具会选择支持参考图的默认工作流，也可以用 `defaultReferencePreset` 明确指定。助手可通过 `presets` 查看实际能力。
 
 - 正向 `prompt` 由对话助手撰写。服务按助手选择的 `style`、`composition`、`atmosphere` 和 `regions` 绘图参数转换格式。工作流绑定 `negativePrompt` 后，助手可以另填 `negative_prompt`。旧配置的 `promptPrefix` 不会加入新任务。
+- 预设可用 `guidance` 提供对应模型的措辞和构图建议，由 `presets` 返回给助手。正向提示词仍由助手按当次要求编写。
 - 在 `bindings` 映射实际节点，再用 `controls` 声明助手可用的范围和枚举。步数、CFG、采样器、调度器、尺寸、降噪和 LoRA 强度都可按工作流开放。助手通过预设列表看到范围与默认值；未指定时用工作流或 `values` 的默认值。更换模型通常要选对应工作流。
 - 图生图工作流同时开放带 `step` 的 `width` 和 `height` 时，默认在允许范围内沿用参考图的比例。助手仍可明确设置尺寸，未指定的另一边会尽量维持参考图比例。
 - MOSS 版式预设设置 `layout: [宽, 高]`，与实际工作流尺寸一致。`regions` 用 `[左, 上, 右, 下]` 的 0–1000 相对坐标标注人、物和文字。文字框另给逐字文本。服务会换算为 MOSS 的中心像素坐标。
 - `reference` 可选 `chat:latest`、`references` 返回的当前对话图片 ID，或本书图集路径。图生图需要有参考图输入的 ComfyUI 工作流。助手理解画面还需要当前 DSH 模型支持视觉输入。对话工具每次向工作流传一张参考图，生成结果也可从本书图集中继续引用。助手可用 `inspect` 查看图集图片并分析成图。
 - 固定 `seed` 可在相同工作流和输入下复查。查询结果会带实际预设和种子。暂未完成的任务需要原预设才能继续取图。
+
+### 高质量二次元人物
+
+私人 ComfyUI 主机可直接使用 [Anima 配置](../cloud/shared/workflows/anima-quality.json)，也可将它的 `presets.anima` 合并进自己的配置并相应填写 `workflow` 路径。默认原生画幅 `1024×1344`，Anima Base v1、`er_sde`、32 步、CFG 4.5，保存 WebP 质量 94。也可在对话中指定横向、全身、镜头与画风。工作流需要 Anima Base、Qwen 0.6B 文本编码器和 Qwen Image VAE。模型权重由部署者按原许可安装。 [Anima 模型说明](https://huggingface.co/circlestone-labs/Anima) · [ComfyUI 示例](https://docs.comfy.org/tutorials/image/anima/anima)
+
+符合图集限制的 WebP 原样保存。图集单边支持 2048 像素，单个插图文件上限 480 KiB；超过限制时，先尝试保持像素尺寸重编码，再逐步缩小。实际生成分辨率由工作流决定。
 
 ## 命令行批量生成
 

@@ -1,6 +1,15 @@
 // Book-local, content-addressed assets. UTF-8 envelopes remain compatible with
 // the existing complete book backup/restore; chapter text only stores a link.
-export const ILLUSTRATION_LIMIT = 384 * 1024;
+// Leave room under the normal 512 KiB book-bundle part limit for UTF-8 metadata.
+export const ILLUSTRATION_LIMIT = 480 * 1024;
+export const ILLUSTRATION_MAX_SIDE = 2048;
+export const ILLUSTRATION_ENCODING = [
+  [ILLUSTRATION_MAX_SIDE, 92],
+  [ILLUSTRATION_MAX_SIDE, 84],
+  [1600, 88],
+  [1200, 86],
+  [800, 78],
+];
 export const illustrationPath = (path) => /^illustrations\/[a-f0-9]{64}\.json$/.test(path ?? '');
 export function imageAsset(text) {
   if (typeof text !== 'string' || text.length > ILLUSTRATION_LIMIT)
@@ -12,8 +21,8 @@ export function imageAsset(text) {
     !Number.isInteger(value.height) ||
     value.width < 1 ||
     value.height < 1 ||
-    value.width > 1600 ||
-    value.height > 1600 ||
+    value.width > ILLUSTRATION_MAX_SIDE ||
+    value.height > ILLUSTRATION_MAX_SIDE ||
     typeof value.data !== 'string' ||
     !/^data:image\/webp;base64,[A-Za-z0-9+/]+={0,2}$/.test(value.data)
   )

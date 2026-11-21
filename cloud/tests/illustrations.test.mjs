@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   imageAsset,
+  ILLUSTRATION_LIMIT,
+  ILLUSTRATION_MAX_SIDE,
   illustrationEntries,
   illustrationMarker,
   insertIllustration,
@@ -40,14 +42,18 @@ test('illustration links preserve prose, emoji, line endings, escapes and fenced
 });
 test('image envelopes reject active content, invalid dimensions, encoding and oversized payloads', () => {
   assert.equal(imageAsset(assetText).width, 1);
+  assert.equal(
+    imageAsset(JSON.stringify({ ...JSON.parse(assetText), width: ILLUSTRATION_MAX_SIDE })).width,
+    2048,
+  );
   for (const change of [
     { data: 'data:image/svg+xml;base64,PHN2Zz4=' },
-    { width: 2000 },
+    { width: ILLUSTRATION_MAX_SIDE + 1 },
     { height: -1 },
     { data: 'data:image/webp;base64,AAAA' },
   ])
     assert.throws(() => imageAsset(JSON.stringify({ ...JSON.parse(assetText), ...change })));
-  assert.throws(() => imageAsset(' '.repeat(768 * 1024 + 1)), /过大/);
+  assert.throws(() => imageAsset(' '.repeat(ILLUSTRATION_LIMIT + 1)), /过大/);
 });
 test('complete book backup restores image bytes and book-relative placements into a different book', async () => {
   const id = 'b-' + 'a'.repeat(32),

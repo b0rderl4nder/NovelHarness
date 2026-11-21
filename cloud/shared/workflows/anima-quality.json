@@ -1,0 +1,30 @@
+{
+  "comfy": "http://127.0.0.1:18188",
+  "defaultPreset": "anima",
+  "presets": {
+    "anima": {
+      "label": "Anima · 高清二次元",
+      "workflow": "anima-quality.api.json",
+      "guidance": "适合二次元人物和场景。Anima Base 可用少量英文标签写人数、画风与辨识点，再用自然语言写人物此刻的动作、视线、道具、前后景关系和主光方向。需要强化清晰度可用 er_sde。人像可用 1024×1344，全身动作或环境戏可用 1344×1024。多张角色图用不同镜头、动作和色彩，每张独立构图。",
+      "bindings": {
+        "prompt": [["4", "text"]],
+        "negativePrompt": [["5", "text"]],
+        "seed": [["7", "seed"]],
+        "steps": [["7", "steps"]],
+        "cfg": [["7", "cfg"]],
+        "sampler": [["7", "sampler_name"]],
+        "scheduler": [["7", "scheduler"]],
+        "width": [["6", "width"]],
+        "height": [["6", "height"]]
+      },
+      "controls": {
+        "steps": { "min": 16, "max": 50, "step": 1 },
+        "cfg": { "min": 1, "max": 8 },
+        "sampler": { "choices": ["er_sde", "euler", "euler_ancestral", "dpmpp_2m_sde_gpu"] },
+        "scheduler": { "choices": ["simple", "normal", "sgm_uniform"] },
+        "width": { "min": 512, "max": 1536, "step": 64 },
+        "height": { "min": 512, "max": 1536, "step": 64 }
+      }
+    }
+  }
+}

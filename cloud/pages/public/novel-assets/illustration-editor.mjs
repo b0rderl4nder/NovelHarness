@@ -4,6 +4,7 @@ import {
   illustrationMarker,
   imageAsset,
   ILLUSTRATION_LIMIT,
+  ILLUSTRATION_ENCODING,
 } from '../../../worker/shared/illustrations.mjs';
 
 export async function prepareIllustration(file, caption) {
@@ -20,12 +21,13 @@ export async function prepareIllustration(file, caption) {
     const context = canvas.getContext('2d');
     if (!context) throw new Error('当前浏览器无法处理图片。');
     let data;
-    for (const side of [1600, 1200, 800]) {
+    for (const [side, quality] of ILLUSTRATION_ENCODING) {
       const scale = Math.min(1, side / Math.max(image.naturalWidth, image.naturalHeight));
       canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
       canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+      context.imageSmoothingQuality = 'high';
       context.drawImage(image, 0, 0, canvas.width, canvas.height);
-      data = canvas.toDataURL('image/webp', 0.8);
+      data = canvas.toDataURL('image/webp', quality / 100);
       if (data.length < ILLUSTRATION_LIMIT - 1024) break;
     }
     const text = JSON.stringify({

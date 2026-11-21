@@ -87,7 +87,7 @@ test('a generated thumbnail uses the stored asset and reports its intrinsic dime
       ],
     },
   });
-  const candidate = tool.children[1];
+  const candidate = tool.children.find((child) => typeof child?.type === 'function');
   const figure = candidate.type(candidate.props);
   const [trigger, caption] = figure.children;
   assert.equal(trigger.type, 'button');

@@ -98,6 +98,7 @@ export function installProposalToolViews(ctx, React) {
   }
   function GeneratedImageToolView({ toolName, block, cwd }) {
     const { result, settled, failed, raw } = proposalToolModel(toolName, block);
+    const presets = Array.isArray(result?.presets) ? result.presets : null;
     const images =
       /^b-[a-f0-9]{32}$/.test(result?.bookId ?? '') &&
       cwd === '/workspace/novels/' + result.bookId &&
@@ -114,12 +115,22 @@ export function installProposalToolViews(ctx, React) {
             ? 'ComfyUI 正在排队或生成'
             : result?.status === 'unknown'
               ? '提交结果未确认，请在 ComfyUI 核对队列'
-              : '暂无可预览的插图';
+              : presets
+                ? '可用生图预设'
+                : '暂无可预览的插图';
     return h(
       'section',
       { className: 'novel-proposal-tool', 'aria-label': 'AI 插图结果' },
       h('p', { role: 'status' }, message),
+      presets ? h('p', null, presets.map((preset) => preset.label).join(' · ')) : null,
       ...images.map((image) => h(GeneratedImage, { key: image.imagePath, bookId: result.bookId, ...image })),
+      images.length && result.preset
+        ? h(
+            'small',
+            null,
+            result.preset + (Number.isSafeInteger(result.seed) ? ' · 种子 ' + result.seed : ''),
+          )
+        : null,
       failed && raw ? h('details', null, h('summary', null, '查看原因'), h('pre', null, raw)) : null,
     );
   }

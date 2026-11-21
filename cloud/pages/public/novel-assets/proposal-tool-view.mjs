@@ -1,6 +1,7 @@
 import { createProseEditor } from './prose-editor.mjs';
 import { openTaskProposal } from './proposal-navigation.mjs';
 import { makeDocumentClient } from './manuscript-core.mjs';
+import { openIllustrationLightbox } from './illustration-editor.mjs';
 import { illustrationPath, imageAsset } from '../../../worker/shared/illustrations.mjs';
 
 // Presentation only, read directly from the ORIGINAL native Tool block and its
@@ -54,6 +55,8 @@ export function installProposalToolViews(ctx, React) {
     ProseEditor = createProseEditor(React);
   function GeneratedImage({ bookId, imagePath, label }) {
     const [state, setState] = React.useState({});
+    const dialog = React.useRef(null);
+    const caption = label || 'AI 插图';
     React.useEffect(() => {
       let active = true;
       makeDocumentClient(bookId)('illustrations', null, { action: 'read', imagePath })
@@ -65,19 +68,31 @@ export function installProposalToolViews(ctx, React) {
         });
       return () => {
         active = false;
+        dialog.current?.remove();
       };
     }, [bookId, imagePath]);
     return state.asset
       ? h(
           'figure',
           { className: 'novel-generated-image' },
-          h('img', {
-            src: state.asset.data,
-            alt: label || 'AI 插图',
-            width: state.asset.width,
-            height: state.asset.height,
-          }),
-          label ? h('figcaption', null, label) : null,
+          h(
+            'button',
+            {
+              type: 'button',
+              className: 'novel-generated-image-trigger',
+              'aria-label': '放大插图：' + caption,
+              onClick: (event) => {
+                dialog.current = openIllustrationLightbox(state.asset.data, caption, event.currentTarget);
+              },
+            },
+            h('img', {
+              src: state.asset.data,
+              alt: caption,
+              width: state.asset.width,
+              height: state.asset.height,
+            }),
+          ),
+          h('figcaption', null, caption + ' · ' + state.asset.width + ' × ' + state.asset.height),
         )
       : h('p', { role: 'status' }, state.error ? '预览加载失败，可在本书图集查看。' : '正在载入插图…');
   }

@@ -42,6 +42,34 @@ export async function prepareIllustration(file, caption) {
   }
 }
 
+export function openIllustrationLightbox(src, caption, trigger) {
+  const dialog = document.createElement('dialog');
+  dialog.className = 'novel-illustration-lightbox';
+  dialog.setAttribute('aria-label', caption || '插图大图');
+  const full = document.createElement('img');
+  full.src = src;
+  full.alt = caption;
+  const close = document.createElement('button');
+  close.type = 'button';
+  close.textContent = '关闭大图';
+  close.onclick = () => dialog.close();
+  dialog.onclick = (event) => {
+    if (event.target === dialog) dialog.close();
+  };
+  dialog.addEventListener(
+    'close',
+    () => {
+      dialog.remove();
+      trigger?.focus();
+    },
+    { once: true },
+  );
+  dialog.append(close, full);
+  document.body.append(dialog);
+  dialog.showModal();
+  return dialog;
+}
+
 // CM owns positions, undo and the only editable chapter. Widgets are disposable
 // views; no parallel prose DOM, draft store or autosave lifecycle is introduced.
 export function illustrationExtension(options) {
@@ -113,30 +141,7 @@ export function illustrationExtension(options) {
       observer.observe(figure);
       let dialog;
       preview.onclick = () => {
-        if (!image.src) return;
-        dialog = document.createElement('dialog');
-        dialog.className = 'novel-illustration-lightbox';
-        const full = document.createElement('img');
-        full.src = image.src;
-        full.alt = caption;
-        const close = document.createElement('button');
-        close.type = 'button';
-        close.textContent = '关闭大图';
-        close.onclick = () => dialog.close();
-        dialog.onclick = (e) => {
-          if (e.target === dialog) dialog.close();
-        };
-        dialog.addEventListener(
-          'close',
-          () => {
-            dialog.remove();
-            preview.focus();
-          },
-          { once: true },
-        );
-        dialog.append(close, full);
-        document.body.append(dialog);
-        dialog.showModal();
+        if (image.src) dialog = openIllustrationLightbox(image.src, caption, preview);
       };
       details.append(preview, status);
       if (!options.readOnly()) {

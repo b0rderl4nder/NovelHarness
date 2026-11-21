@@ -1579,9 +1579,15 @@ fieldset.novel-canon-detail {
 .novel-generated-image {
   margin: 8px 0;
 }
-.novel-generated-image img {
+.novel-proposal-tool .novel-generated-image-trigger {
   display: block;
   max-width: min(100%, 260px);
+  padding: 0;
+  cursor: zoom-in;
+}
+.novel-generated-image img {
+  display: block;
+  max-width: 100%;
   max-height: 300px;
   width: auto;
   height: auto;

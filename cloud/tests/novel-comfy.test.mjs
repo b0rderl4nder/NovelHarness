@@ -11,6 +11,7 @@ import { bindWorkflow, main } from '../scripts/novel-comfy.mjs';
 import { illustrationEntries, imageAsset } from '../worker/shared/illustrations.mjs';
 import { installComfyTools } from '../official/novel/comfy-tools.mjs';
 import { installNovelTools } from '../worker/novel-tools.mjs';
+import { compileVisualPrompt } from '../official/novel/comfy-presets.mjs';
 
 const sha = (text) => createHash('sha256').update(text).digest('hex');
 const bytes = Buffer.from('UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEADsD+JaQAA3AAAAAA', 'base64');
@@ -46,6 +47,7 @@ test('book-scoped agent can submit, resume after reload, and publish a candidate
   const dir = await mkdtemp(join(tmpdir(), 'novel-comfy-tool-test-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
   let prompts = 0;
+  const rendered = [];
   let ready = false;
   const server = createServer(async (req, res) => {
     const url = new URL(req.url, 'http://localhost');
@@ -53,8 +55,7 @@ test('book-scoped agent can submit, resume after reload, and publish a candidate
     if (url.pathname === '/prompt') {
       prompts++;
       const data = JSON.parse(await new Response(ReadableStream.from(req)).text());
-      assert.equal(data.prompt['5'].inputs.text, '夜里的灯塔和一束微弱暖光');
-      assert.equal(data.prompt['4'].inputs.image, 'fixture/upload.webp');
+      rendered.push(data.prompt);
       return send({ prompt_id: 'comfy-receipt' });
     }
     if (url.pathname === '/upload/image') {
@@ -86,7 +87,7 @@ test('book-scoped agent can submit, resume after reload, and publish a candidate
     }),
   );
   const uploads = [];
-  function tools(book) {
+  function tools(book, configPath = config) {
     const definitions = new Map();
     const agent = {
       session: {},
@@ -120,7 +121,7 @@ test('book-scoped agent can submit, resume after reload, and publish a candidate
           },
         }),
       },
-      config,
+      configPath,
       { waitMs: 0 },
     );
     return async (args, callId = 'native-call') =>
@@ -144,6 +145,88 @@ test('book-scoped agent can submit, resume after reload, and publish a candidate
   assert.equal(completed.images[0].label, '灯塔');
   assert.deepEqual(await call(status), completed);
   assert.equal(uploads.length, 1);
+  assert.equal(completed.preset, 'default');
+  assert.equal(completed.seed, queued.seed);
+  assert.equal(rendered[0]['5'].inputs.text, '夜里的灯塔和一束微弱暖光');
+  assert.equal(rendered[0]['4'].inputs.image, 'fixture/upload.webp');
+
+  const multi = join(dir, 'presets.json');
+  await writeFile(
+    multi,
+    JSON.stringify({
+      comfy: 'http://127.0.0.1:' + server.address().port,
+      defaultPreset: 'paint',
+      presets: {
+        paint: { workflow: 'workflow.json', bindings: { prompt: bindings.script } },
+        layout: {
+          workflow: 'workflow.json',
+          bindings: { prompt: bindings.script, seed: bindings.seed },
+          layout: [1024, 640],
+        },
+      },
+    }),
+  );
+  const profiled = tools(novelId, multi);
+  const advertised = await profiled({ action: 'presets' });
+  assert.equal(advertised.defaultPreset, 'paint');
+  assert.deepEqual(advertised.presets.find((item) => item.id === 'layout').layout, [1024, 640]);
+  await assert.rejects(
+    profiled({ action: 'generate', prompt: '灯塔', seed: 0 }, 'no-seed'),
+    /不支持固定种子/,
+  );
+  const selected = await profiled(
+    {
+      action: 'generate',
+      preset: 'layout',
+      seed: 0,
+      prompt: '灯塔',
+      caption: '灯塔',
+      atmosphere: '暖灯与海雾',
+      regions: [{ label: 'object', caption: '左边灯塔', box: [40, 60, 400, 800] }],
+    },
+    'selected-layout',
+  );
+  assert.equal(selected.seed, 0);
+  assert.equal(selected.preset, 'layout');
+  assert.equal(rendered.length, 2);
+  assert.equal(rendered[1]['6'].inputs.seed, 0);
+  assert.equal(JSON.parse(rendered[1]['5'].inputs.text).items[0].caption, '左边灯塔');
+  assert.match(JSON.parse(rendered[1]['5'].inputs.text).summary.caption, /暖灯与海雾/);
+});
+
+test('MOSS regions compile into centered pixel boxes while keeping style, shot and light separate', () => {
+  const args = {
+    prompt: '人物从窗外递进一张车票',
+    style: '厚涂动画',
+    composition: '双人侧视',
+    atmosphere: '夜雨与暖灯',
+    regions: [
+      { label: 'character', caption: '左侧旅客', box: [0, 100, 500, 900] },
+      { label: 'text', caption: '票面', box: [500, 500, 700, 700], text: '末班车' },
+    ],
+  };
+  const preset = { layout: [1024, 640], promptPrefix: 'fixture\n' };
+  const compiled = compileVisualPrompt(preset, args);
+  const body = JSON.parse(compiled.slice('fixture\n'.length));
+  assert.equal(body.summary.canvas, 'landscape');
+  assert.match(
+    body.summary.caption,
+    /Style：厚涂动画\nComposition：双人侧视\nLighting and atmosphere：夜雨与暖灯/,
+  );
+  assert.deepEqual(
+    body.items.map((item) => item.bbox),
+    [
+      [-256, -512, 256, 0],
+      [0, 0, 128, 205],
+    ],
+  );
+  assert.equal(body.items[1].text, '末班车');
+  assert.throws(() => compileVisualPrompt({ promptPrefix: '' }, args), /不支持位置框/);
+  assert.throws(
+    () =>
+      compileVisualPrompt(preset, { ...args, regions: [{ ...args.regions[0], box: [500, 0, 400, 500] }] }),
+    /位置框无效/,
+  );
 });
 
 test('the visual bridge binds arbitrary API node inputs and preserves graph edges', () => {

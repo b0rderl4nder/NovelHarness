@@ -85,7 +85,7 @@ export async function apply(ctx, config) {
         ...(config.comfyConfig
           ? {
               imageTool:
-                '使用 novel_generate_image 画图和改图。先按任务选择工作流，可通过 presets 查看对应模型的画面说明与参数；对话附件直接用 chat:latest，无需在工作区找文件。',
+                '用 novel_generate_image 画图、改图，presets 查看参数，对话附件用 chat:latest。用 novel_proposal_submit 的 illustrations 随完整章文交付首版图，入书后再按你的判断重画。生图失败或未就绪时先保存完整章文和已可用的插图。',
             }
           : {}),
       });

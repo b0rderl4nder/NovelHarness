@@ -13,7 +13,7 @@ import { writingPrompt } from '../pages/public/novel-assets/bundle.mjs';
 import { DOCUMENT_LIMIT, PART_LIMIT } from '../worker/document-storage.mjs';
 import { makeBackup, restoreBackup } from '../pages/public/novel-assets/backup.mjs';
 import { installProposalTools } from '../worker/proposal-tools.mjs';
-import { imageAsset } from '../worker/shared/illustrations.mjs';
+import { imageAsset, illustrationEntries } from '../worker/shared/illustrations.mjs';
 import {
   editorText,
   editorValue,
@@ -510,6 +510,67 @@ test('explicit native planning changes clear/delete with both-version CAS, origi
   assert.throws(() => apply({ remove_chapters: [99] }), { status: 409 });
   const ordinary = makeDocumentService(f.fs, f.fs.db, id);
   assert.throws(() => ordinary.run({ kind: 'agentOutline', action: 'inspect' }), { status: 403 });
+});
+
+test('final chapter submission saves prose and two placed assets together, and rejects bad placements before writing', () => {
+  const f = fixture({ proposalActor: { sessionId: 'native-author' } });
+  const task = f.run({
+    kind: 'agentPrepare',
+    request: { mode: 'new-chapter', without_outline: true, instruction: '直接写带插图的章文' },
+    requestKey: 'illustrated-commit',
+  });
+  const images = ['钟楼', '码头'].map(
+    (label) =>
+      f.run({
+        kind: 'illustrations',
+        action: 'upload',
+        content: JSON.stringify({
+          format: 'novel-illustration-v1',
+          width: 1,
+          height: 1,
+          label,
+          data: 'data:image/webp;base64,UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEADsD+JaQAA3AAAAAA',
+        }),
+      }).imagePath,
+  );
+  const content = '# 第一声\n\n她摸着停摆的机芯。\n\n老周望着远处的浮标。';
+  const submit = {
+    kind: 'agentProposal',
+    action: 'submit',
+    id: task.proposalId,
+    expectedHash: task.expectedHash,
+    content,
+    complete: true,
+    illustrations: [
+      { imagePath: images[0], after: '她摸着停摆的机芯。' },
+      { imagePath: images[1], after: '老周望着远处的浮标。' },
+    ],
+  };
+  const before = f.run({ kind: 'read', path: task.target });
+  assert.throws(
+    () =>
+      f.run({
+        ...submit,
+        illustrations: [submit.illustrations[0], { ...submit.illustrations[1], after: '无效定位' }],
+      }),
+    { status: 400 },
+  );
+  assert.equal(f.run({ kind: 'read', path: task.target }).text, before.text);
+  assert.equal(
+    f.run({ kind: 'agentProposal', action: 'inspect', id: task.proposalId }).expectedHash,
+    task.expectedHash,
+  );
+  const result = f.run(submit);
+  assert.equal(result.published, true);
+  assert.deepEqual(result.chapterIllustrations, images);
+  const published = f.run({ kind: 'read', path: task.target }).text;
+  const entries = illustrationEntries(published);
+  assert.deepEqual(
+    entries.map((e) => e.caption),
+    ['钟楼', '码头'],
+  );
+  assert.ok(published.includes('机芯。\n\n' + entries[0].marker));
+  assert.ok(published.includes('浮标。\n\n' + entries[1].marker));
 });
 
 test('explicit without-outline writing preserves unrelated prose and directly saves requested continuation with history', () => {

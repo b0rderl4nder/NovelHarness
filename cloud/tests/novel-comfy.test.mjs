@@ -100,6 +100,24 @@ test('book-scoped agent can submit, resume after reload, and publish a candidate
     }),
   );
   const uploads = [];
+  const turnEvents = [];
+  const root = '/workspace/novels/' + novelId;
+  const proseTask = {
+    bookId: novelId,
+    target: root + '/' + chapter,
+    task: { kind: 'prose' },
+    proposalId: 'current-prose',
+    status: 'pending',
+    expectedHash: 'initial',
+  };
+  function receipt(name, value) {
+    const callId = 'receipt-' + turnEvents.length;
+    turnEvents.push({ type: 'tool/call', data: { name, callId } });
+    turnEvents.push({
+      type: 'tool/result',
+      data: { message: { toolCallId: callId, content: [{ type: 'text', text: JSON.stringify(value) }] } },
+    });
+  }
   function tools(book, configPath = config) {
     const definitions = new Map();
     const agent = {
@@ -134,6 +152,7 @@ test('book-scoped agent can submit, resume after reload, and publish a candidate
                         },
                       },
                       { type: 'user/message', data: { content: [{ type: 'image', attachment: chatImage }] } },
+                      ...turnEvents,
                     ]
                   : [],
             };
@@ -195,6 +214,44 @@ test('book-scoped agent can submit, resume after reload, and publish a candidate
   assert.equal(completed.seed, queued.seed);
   assert.equal(rendered[0]['5'].inputs.text, '夜里的灯塔和一束微弱暖光');
   assert.equal(rendered[0]['4'].inputs.image, 'fixture/upload.webp');
+  turnEvents.push({ type: 'turn/start', data: { turn: 1 } });
+  receipt('novel_proposal_prepare', proseTask);
+  receipt('novel_generate_image', completed);
+  const deferred = await call({ ...request, prompt: '消掉黑边' }, 'clock-redraw-before-delivery');
+  assert.equal(deferred.status, 'deliver-chapter');
+  assert.equal(deferred.chapterDelivery.images[0].imagePath, completed.images[0].imagePath);
+  assert.equal(deferred.chapterDelivery.expectedHash, 'initial');
+  assert.equal(prompts, 1);
+  assert.equal(
+    (
+      await call(
+        { ...request, caption: '改称旧钟', revises: completed.images[0].imagePath },
+        'renamed-redraw',
+      )
+    ).status,
+    'deliver-chapter',
+  );
+  const second = {
+    status: 'ready',
+    bookId: novelId,
+    images: [
+      { imagePath: 'illustrations/' + 'c'.repeat(64) + '.json', label: '另一幕' },
+      { imagePath: 'illustrations/' + 'e'.repeat(64) + '.json', label: '另一幕' },
+    ],
+  };
+  receipt('novel_generate_image', second);
+  receipt('novel_proposal_submit', {
+    ...proseTask,
+    status: 'accepted',
+    chapterIllustrations: [completed.images[0].imagePath, second.images[1].imagePath],
+  });
+  receipt('novel_generate_image', {
+    ...completed,
+    images: [{ imagePath: 'illustrations/' + 'd'.repeat(64) + '.json', label: '灯塔' }],
+  });
+  assert.equal((await call({ ...request, prompt: '消掉黑边' }, 'redraw-after-delivery')).status, 'ready');
+  assert.equal(prompts, 2);
+  turnEvents.push({ type: 'turn/end', data: { turn: 1 } }, { type: 'turn/start', data: { turn: 2 } });
 
   const multi = join(dir, 'presets.json');
   await writeFile(
@@ -263,16 +320,17 @@ test('book-scoped agent can submit, resume after reload, and publish a candidate
   );
   assert.equal(selected.seed, 0);
   assert.equal(selected.preset, 'layout');
-  assert.equal(rendered.length, 2);
-  assert.equal(rendered[1]['6'].inputs.seed, 0);
-  assert.equal(rendered[1]['6'].inputs.width, 1152);
-  assert.equal(rendered[1]['6'].inputs.style, '水印');
-  assert.match(referenceUploads[1].toString('latin1'), /Content-Type: image\/png/i);
-  assert.ok(referenceUploads[1].includes(bytes));
+  assert.equal(rendered.length, 3);
+  const layoutGraph = rendered.at(-1);
+  assert.equal(layoutGraph['6'].inputs.seed, 0);
+  assert.equal(layoutGraph['6'].inputs.width, 1152);
+  assert.equal(layoutGraph['6'].inputs.style, '水印');
+  assert.match(referenceUploads.at(-1).toString('latin1'), /Content-Type: image\/png/i);
+  assert.ok(referenceUploads.at(-1).includes(bytes));
   assert.deepEqual(selected.adjustments, { width: 1152 });
-  assert.equal(JSON.parse(rendered[1]['5'].inputs.text).items[0].caption, '左边灯塔');
-  assert.equal(JSON.parse(rendered[1]['5'].inputs.text).items[0].bbox[1], -530);
-  assert.match(JSON.parse(rendered[1]['5'].inputs.text).summary.caption, /暖灯与海雾/);
+  assert.equal(JSON.parse(layoutGraph['5'].inputs.text).items[0].caption, '左边灯塔');
+  assert.equal(JSON.parse(layoutGraph['5'].inputs.text).items[0].bbox[1], -530);
+  assert.match(JSON.parse(layoutGraph['5'].inputs.text).summary.caption, /暖灯与海雾/);
 });
 
 test('MOSS regions compile into centered pixel boxes while keeping style, shot and light separate', () => {

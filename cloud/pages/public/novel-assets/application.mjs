@@ -7,6 +7,7 @@ import { resetBookConversation } from './conversation-reset.mjs';
 import { createTitleEditor, renameConversation, renameBook } from './title-editor.mjs';
 import { icon } from './ui-icons.mjs';
 import { createAssistantSplitter } from './assistant-splitter.mjs';
+import { createComfySettingsPanel } from './comfy-settings.mjs';
 import {
   bookActivities,
   subscribeBookActivities,
@@ -23,6 +24,7 @@ export function installApplication(ctx, React, { createPortal } = {}) {
   const anonymous = globalThis.document?.body?.dataset.novelAuth === 'anonymous';
   const TitleEditor = createTitleEditor(React);
   const AssistantSplitter = createAssistantSplitter(React);
+  const ComfySettings = createComfySettingsPanel(React);
   ctx.effect(() => bindVisibleViewport(), 'novel: original browser visual viewport');
   let modelLauncher;
   let Editor;
@@ -994,6 +996,7 @@ export function installApplication(ctx, React, { createPortal } = {}) {
       h(AccountHeading),
       h(SpaceSummary),
       h(DeploymentStatus),
+      h(ComfySettings),
       configured === null
         ? null
         : h(

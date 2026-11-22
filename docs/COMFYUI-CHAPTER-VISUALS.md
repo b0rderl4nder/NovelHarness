@@ -4,6 +4,10 @@
 
 私人部署可在 NovelHarness 服务主机设置环境变量 `NOVEL_COMFY_CONFIG`，值为下面的配置文件绝对路径。ComfyUI 地址从主机侧访问，模型、节点和 API 格式工作流由部署者配置。公开访客隔离模式不会加载主机生图工具。
 
+登录后，从侧栏进入 **数据与访问 → 插图生成 · ComfyUI**。这里可测试连接，选择默认文生图和参考图预设，并在「工作流参数」下修改预设已开放的尺寸、采样步数、采样器、CFG 等默认值。保存后用于新任务。主机配置可用 `allowedComfyEndpoints` 登记其他 ComfyUI 地址，网页从已登记的地址中切换。添加模型、工作流或新节点绑定仍在主机的 JSON 文件中完成。
+
+聊天会在插图任务运行时显示队列或当前采样步骤。支持运行中预览的 ComfyUI 工作流会同时发来临时小图。成图存入图集后就在聊天里显示，回合结束、工具详情折叠后仍能查看。浏览器通过 NovelHarness 读取进度和图片，由主机连接 ComfyUI。 [ComfyUI WebSocket 接口](https://docs.comfy.org/development/comfyui-server/comms_routes)
+
 ```json
 {
   "comfy": "http://127.0.0.1:18188",

@@ -50,10 +50,10 @@ export function proposalToolModel(toolName, block) {
   };
 }
 
-function resultImages(result, cwd) {
+export function resultImages(result, cwd) {
   if (
     !/^b-[a-f0-9]{32}$/.test(result?.bookId ?? '') ||
-    cwd !== '/workspace/novels/' + result.bookId ||
+    (cwd && cwd.replace(/\/$/, '') !== '/workspace/novels/' + result.bookId) ||
     !Array.isArray(result.images)
   )
     return [];
@@ -63,23 +63,17 @@ function resultImages(result, cwd) {
     .map((item) => ({ ...item, bookId: result.bookId }));
 }
 
-export function turnImages(snapshot, turn, cwd) {
+export function turnImages(calls, cwd) {
   const images = new Map();
-  const visit = (block) => {
-    if (!block) return;
-    const name = block.call?.name ?? block.name;
-    if (name === 'novel_generate_image' && 'kind' in block && !block.isError) {
-      const { result } = proposalToolModel(name, block);
-      for (const image of resultImages(result, cwd)) {
+  function visit(block) {
+    if (block.name === 'novel_generate_image' && block.kind === 'tool-result' && !block.isError) {
+      for (const image of resultImages(proposalToolModel(block.name, block).result, cwd)) {
         if (!images.has(image.imagePath)) images.set(image.imagePath, image);
       }
     }
     for (const child of block.subCalls ?? []) visit(child);
-  };
-  for (const key of snapshot?.locations.getTurn(turn) ?? []) {
-    const node = snapshot.nodes.get(key);
-    if (node?.kind === 'tool-call') visit(node.data.root);
   }
+  for (const call of calls) if (call.root) visit(call.root);
   return [...images.values()];
 }
 
@@ -129,45 +123,116 @@ export function installProposalToolViews(ctx, React) {
         )
       : h('p', { role: 'status' }, state.error ? '预览加载失败，可在本书图集查看。' : '正在载入插图…');
   }
-  function GeneratedImageToolView({ toolName, block, cwd }) {
-    if (block.call?.args?.text?.('action') === 'inspect') return null;
+  function DrawingProgress({ book, call, caption }) {
+    const [state, setState] = React.useState(null);
+    const [previewError, setPreviewError] = React.useState(0);
+    const url = '/api/comfy/progress?' + new URLSearchParams({ book, call });
+    React.useEffect(() => {
+      if (!book || !call) return;
+      const owner = new AbortController();
+      let timer;
+      async function poll() {
+        try {
+          const response = await fetch(url, {
+            credentials: 'same-origin',
+            signal: AbortSignal.any([owner.signal, AbortSignal.timeout(5000)]),
+          });
+          if ([401, 403, 404].includes(response.status)) return;
+          if (response.ok && !owner.signal.aborted) {
+            const next = await response.json();
+            if (next.active && !owner.signal.aborted) setState(next);
+          }
+        } catch {
+          /* The active tool remains visible while the connection recovers. */
+        }
+        if (!owner.signal.aborted) timer = setTimeout(poll, 2200);
+      }
+      poll();
+      return () => {
+        owner.abort();
+        clearTimeout(timer);
+      };
+    }, [url, book, call]);
+    const message =
+      {
+        submitting: '正在提交给 ComfyUI',
+        queued: '插图已排队',
+        waiting: '等待 ComfyUI 返回成图',
+        generating: '正在生成插图',
+        saving: '正在存入本书图集',
+      }[state?.stage] ?? '正在准备插图';
+    return h(
+      React.Fragment,
+      null,
+      h(
+        'p',
+        { role: 'status' },
+        [caption, message, state?.max && `${state.value} / ${state.max} 步`].filter(Boolean).join(' · '),
+      ),
+      state?.max ? h('progress', { max: state.max, value: state.value, 'aria-label': '当前采样进度' }) : null,
+      state?.previewId && state.previewId !== previewError
+        ? h(
+            'figure',
+            { className: 'novel-generated-image' },
+            h('img', {
+              src: url + '&image=' + state.previewId,
+              alt: '绘制中的插图预览',
+              onError: () => setPreviewError(state.previewId),
+            }),
+            h('figcaption', null, '生成中预览'),
+          )
+        : null,
+    );
+  }
+  function GeneratedImageToolView({ toolName, block, cwd, callId }) {
     const { result, settled, failed, raw } = proposalToolModel(toolName, block);
-    const presets = Array.isArray(result?.presets) ? result.presets : null;
-    const references = Array.isArray(result?.references) ? result.references : null;
+    const action = block.args?.text?.('action');
+    if (
+      ['inspect', 'presets', 'references'].includes(action) ||
+      result?.presets ||
+      result?.references ||
+      (settled && !failed && !result?.status && !result?.images)
+    )
+      return null;
     const images = resultImages(result, cwd);
+    if (images.length)
+      return h(
+        'section',
+        { className: 'novel-proposal-tool', 'aria-label': 'AI 插图结果' },
+        ...images.map((image) => h(GeneratedImage, { key: image.imagePath, ...image })),
+      );
+    if (!settled) {
+      const book = /^\/workspace\/novels\/(b-[a-f0-9]{32})\/?$/.exec(cwd ?? '')?.[1];
+      return h(
+        'section',
+        { className: 'novel-proposal-tool', 'aria-label': 'AI 生图进度' },
+        h(DrawingProgress, { book, call: callId ?? block.callId, caption: block.args?.text?.('caption') }),
+      );
+    }
     const message = failed
       ? '插图生成失败'
-      : !settled
-        ? '正在生成插图…'
-        : images.length
-          ? '候选图已存入本书图集'
-          : result?.status === 'queued'
-            ? 'ComfyUI 正在排队或生成'
-            : result?.status === 'deliver-chapter'
-              ? '先保存本章和已生成的插图'
-              : result?.status === 'unknown'
-                ? '提交结果未确认，请在 ComfyUI 核对队列'
-                : presets
-                  ? '可用生图预设'
-                  : references
-                    ? `当前对话有 ${references.length} 张可引用的图片`
-                    : '暂无可预览的插图';
+      : result?.status === 'queued'
+        ? 'ComfyUI 正在排队或生成'
+        : result?.status === 'deliver-chapter'
+          ? '先保存本章和已生成的插图'
+          : result?.status === 'unknown'
+            ? '提交结果未确认，请在 ComfyUI 核对队列'
+            : '插图结果暂无法读取';
     return h(
       'section',
       { className: 'novel-proposal-tool', 'aria-label': 'AI 生图执行详情' },
       h('p', { role: 'status' }, message),
-      presets ? h('p', null, presets.map((preset) => preset.label).join(' · ')) : null,
       failed && raw ? h('details', null, h('summary', null, '查看原因'), h('pre', null, raw)) : null,
     );
   }
-  function GeneratedImagesTail({ turn, chat, sessionId }) {
-    const snapshot = React.useSyncExternalStore(chat.subscribe, chat.getSnapshot);
-    const catalog = React.useSyncExternalStore(ctx.sessions.list.subscribe, ctx.sessions.list.getSnapshot);
-    const images = turnImages(snapshot, turn.turn, catalog.byId[sessionId]?.cwd);
+  function GeneratedImagesTail({ turn, chat }) {
+    const source = chat.getSnapshot().nodes.turnDataSource(turn.turn, 'tool-call');
+    const calls = React.useSyncExternalStore(source.subscribe, source.getSnapshot);
+    const images = turnImages(calls);
     return images.length
       ? h(
           'section',
-          { className: 'novel-proposal-tool', 'aria-label': 'AI 插图结果' },
+          { className: 'novel-proposal-tool', 'aria-label': '插图结果' },
           ...images.map((image) => h(GeneratedImage, { key: image.imagePath, ...image })),
         )
       : null;
@@ -238,7 +303,6 @@ export function installProposalToolViews(ctx, React) {
           name: 'conversation.chat.turnTail',
           id: 'novel-generated-images',
           inject: (sessionId) => ({
-            sessionId,
             chat: ctx.uiConversation.binding(ctx.sessions.binding(sessionId)).target('chat'),
           }),
         },

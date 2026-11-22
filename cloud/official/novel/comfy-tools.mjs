@@ -4,15 +4,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { bindWorkflow, encodeIllustration, request, webpSize } from '../../shared/comfy-render.mjs';
-import {
-  compileVisualPrompt,
-  loadComfyPresets,
-  referenceCanvas,
-  regionLabels,
-  visualAdjustments,
-} from './comfy-presets.mjs';
+import { compileVisualPrompt, referenceCanvas, regionLabels, visualAdjustments } from './comfy-presets.mjs';
 import { chatImageReferences, loadChatImage } from './comfy-chat-images.mjs';
 import { chapterDeliveryFor } from './comfy-chapter-delivery.mjs';
+import { createComfySettings } from './comfy-settings.mjs';
+import { createComfyProgress, watchComfy } from './comfy-progress.mjs';
 
 const maxImageBytes = 16 * 1024 * 1024;
 const jobId = /^[0-9a-f-]{36}$/;
@@ -38,15 +34,19 @@ export function installComfyTools(
   const db = instance.ctx.storage;
   db.run(`CREATE TABLE IF NOT EXISTS novel_comfy_jobs (
     id TEXT PRIMARY KEY, book TEXT NOT NULL, call_id TEXT NOT NULL,
-    revision TEXT NOT NULL, caption TEXT NOT NULL, prompt_id TEXT, images TEXT, recipe TEXT,
+    revision TEXT NOT NULL, caption TEXT NOT NULL, prompt_id TEXT, images TEXT, recipe TEXT, connection TEXT,
     UNIQUE (book, call_id)
   )`);
-  if (!db.all('PRAGMA table_info(novel_comfy_jobs)').some((column) => column.name === 'recipe'))
-    db.run('ALTER TABLE novel_comfy_jobs ADD COLUMN recipe TEXT');
+  const columns = db.all('PRAGMA table_info(novel_comfy_jobs)');
+  for (const name of ['recipe', 'connection'])
+    if (!columns.some((column) => column.name === name))
+      db.run(`ALTER TABLE novel_comfy_jobs ADD COLUMN ${name} TEXT`);
   const find = (book, id) => db.one('SELECT * FROM novel_comfy_jobs WHERE book = ? AND id = ?', book, id);
   const findCall = (book, id) =>
     db.one('SELECT * FROM novel_comfy_jobs WHERE book = ? AND call_id = ?', book, id);
-  let configured;
+  const settings = createComfySettings(db, configPath);
+  const progress = createComfyProgress();
+  instance.comfy = { settings, progress };
   return installNovelTools(instance.sessions.context, ({ root, assertScope }) => {
     const book = root.slice('/workspace/novels/'.length);
     return [
@@ -231,11 +231,7 @@ export function installComfyTools(
             )
               return JSON.stringify({ status: 'deliver-chapter', bookId: book, chapterDelivery: pending });
           }
-          const available = await (configured ??= loadComfyPresets(configPath).catch((error) => {
-            configured = undefined;
-            if (error.code === 'ENOENT') throw new Error('主机尚未设置可用的 ComfyUI 工作流文件。');
-            throw error;
-          }));
+          const available = row?.connection ? null : row ? await settings.original() : await settings.load();
           assertScope(exec);
           if (action === 'presets')
             return JSON.stringify({
@@ -254,184 +250,211 @@ export function installComfyTools(
               })),
             });
           const config = row
-            ? (available.presets.get(row.recipe ? JSON.parse(row.recipe).preset : undefined) ??
-              [...available.presets.values()].find((preset) => preset.revision === row.revision))
+            ? row.connection
+              ? JSON.parse(row.connection)
+              : [...available.presets.values()].find((preset) => preset.revision === row.revision)
             : available.presets.get(
                 args.preset ??
                   (reference
                     ? (available.defaultReferencePreset ?? available.defaultPreset)
                     : available.defaultPreset),
               );
-          if (!config || (row && row.revision !== config.revision))
+          if (!config)
             throw new Error(
               row ? '生图预设已改变，无法从另一套预设查询此任务。' : '没有这个生图预设，请先查看预设列表。',
             );
-          const comfy = (route, options) => request(config.base, route, { ...options, signal: exec.signal });
-          if (!row) {
-            if (config.requiresReference && !reference) throw new Error('此编辑预设需要提供参考图。');
-            let asset;
-            if (reference) {
-              if (!Object.hasOwn(config.bindings, 'reference')) throw new Error('此工作流未配置参考图输入。');
-              if (reference.startsWith('chat:')) {
-                asset = await loadChatImage(attachments, await references(), reference, exec.signal);
-              } else {
-                const { data, width, height } = service.run({
-                  kind: 'illustrations',
-                  action: 'read',
-                  imagePath: reference,
+          const base = new URL(config.base);
+          const comfy = (route, options) => request(base, route, { ...options, signal: exec.signal });
+          const live = progress.begin(book, exec.callId);
+          let watcher;
+          try {
+            if (!row) {
+              if (config.requiresReference && !reference) throw new Error('此编辑预设需要提供参考图。');
+              let asset;
+              if (reference) {
+                if (!Object.hasOwn(config.bindings, 'reference'))
+                  throw new Error('此工作流未配置参考图输入。');
+                if (reference.startsWith('chat:')) {
+                  asset = await loadChatImage(attachments, await references(), reference, exec.signal);
+                } else {
+                  const { data, width, height } = service.run({
+                    kind: 'illustrations',
+                    action: 'read',
+                    imagePath: reference,
+                  });
+                  asset = {
+                    data: Buffer.from(data.split(',')[1], 'base64'),
+                    mediaType: 'image/webp',
+                    extension: 'webp',
+                    width,
+                    height,
+                  };
+                }
+                assertScope(exec);
+                if (asset.data.length > maxImageBytes) throw new Error('ComfyUI 参考图超过 16 MiB。');
+              }
+              const chosen = visualAdjustments(config, args.adjustments);
+              const adjustments = asset
+                ? { ...referenceCanvas(config.controls, chosen, asset), ...chosen }
+                : chosen;
+              const values = {
+                ...config.values,
+                ...Object.fromEntries(
+                  Object.entries(config.controls).map(([key, control]) => [key, control.default]),
+                ),
+                ...adjustments,
+                prompt: compileVisualPrompt(config, args, adjustments),
+              };
+              if (Object.hasOwn(config.bindings, 'negativePrompt')) {
+                const [node, input] = config.bindings.negativePrompt[0];
+                values.negativePrompt =
+                  args.negative_prompt ?? values.negativePrompt ?? config.template[node].inputs[input];
+              } else if (args.negative_prompt !== undefined) throw new Error('此工作流没有负向提示词输入。');
+              const supportsSeed = Object.hasOwn(config.bindings, 'seed');
+              if (
+                args.seed !== undefined &&
+                (!supportsSeed || !Number.isSafeInteger(args.seed) || args.seed < 0 || args.seed >= 2 ** 32)
+              )
+                throw new Error('此预设不支持固定种子，或种子超出 0–4294967295。');
+              const seed = supportsSeed ? (args.seed ?? randomInt(2 ** 32)) : null;
+              if (supportsSeed) values.seed = seed;
+              if (Object.hasOwn(config.bindings, 'useReference')) values.useReference = Boolean(reference);
+              if (
+                !reference &&
+                Object.hasOwn(config.bindings, 'reference') &&
+                values.reference === undefined
+              ) {
+                const [node, input] = config.bindings.reference[0];
+                values.reference = config.template[node].inputs[input];
+              }
+              if (asset) {
+                values.reference = '';
+                bindWorkflow(config.template, config.bindings, values);
+                const form = new FormData();
+                form.set(
+                  'image',
+                  new Blob([asset.data], { type: asset.mediaType }),
+                  sha(asset.data) + '.' + asset.extension,
+                );
+                const uploaded = await comfy('upload/image', { form });
+                if (typeof uploaded.name !== 'string' || !uploaded.name)
+                  throw new Error('ComfyUI 没有返回参考图回执。');
+                values.reference = uploaded.subfolder
+                  ? uploaded.subfolder + '/' + uploaded.name
+                  : uploaded.name;
+              }
+              const graph = bindWorkflow(config.template, config.bindings, values);
+              assertScope(exec);
+              const job = randomUUID();
+              db.run(
+                'INSERT INTO novel_comfy_jobs (id, book, call_id, revision, caption, recipe, connection) VALUES (?, ?, ?, ?, ?, ?, ?)',
+                job,
+                book,
+                exec.callId,
+                config.revision,
+                args.caption?.trim() || 'AI 插图',
+                JSON.stringify({
+                  preset: config.id,
+                  seed,
+                  ...(Object.keys(adjustments).length ? { adjustments } : {}),
+                }),
+                JSON.stringify({ base: base.href, ffmpeg: config.ffmpeg }),
+              );
+              row = find(book, job);
+              // A lost POST response is ambiguous. Retain the receipt and never submit it twice.
+              try {
+                watcher = await watchComfy(base, live, exec.signal);
+                exec.signal.throwIfAborted();
+                const submitted = await comfy('prompt', {
+                  data: {
+                    prompt: graph,
+                    ...(watcher
+                      ? { client_id: watcher.clientId, extra_data: { preview_method: 'latent2rgb' } }
+                      : {}),
+                  },
                 });
-                asset = {
-                  data: Buffer.from(data.split(',')[1], 'base64'),
-                  mediaType: 'image/webp',
-                  extension: 'webp',
-                  width,
-                  height,
-                };
+                if (typeof submitted.prompt_id !== 'string' || !submitted.prompt_id) return result('unknown');
+                db.run('UPDATE novel_comfy_jobs SET prompt_id = ? WHERE id = ?', submitted.prompt_id, job);
+                row = find(book, job);
+                live.update(watcher ? 'queued' : 'waiting');
+                watcher?.track(row.prompt_id);
+              } catch (error) {
+                if (error.status >= 400 && error.status < 500) {
+                  db.run('DELETE FROM novel_comfy_jobs WHERE id = ?', job);
+                  throw new Error('ComfyUI 拒绝了工作流，请检查节点和模型配置。');
+                }
+                exec.signal.throwIfAborted();
+                return result('unknown');
+              }
+            } else live.update('waiting');
+            const deadline = Date.now() + (action === 'generate' ? waitMs : 0);
+            let history;
+            do {
+              const response = await comfy('history/' + encodeURIComponent(row.prompt_id));
+              history = response[row.prompt_id];
+              if (history || Date.now() >= deadline) break;
+              await delay(Math.min(pollMs, Math.max(0, deadline - Date.now())), undefined, {
+                signal: exec.signal,
+              });
+            } while (true);
+            if (!history) return result('queued');
+            if (history.status?.status_str === 'error')
+              throw new Error('ComfyUI 生图失败，请检查工作流执行记录。');
+            const files = Object.values(history.outputs ?? {})
+              .flatMap((node) => node.images ?? [])
+              .filter((file) => file.type === 'output' && /\.(png|jpe?g|webp)$/i.test(file.filename))
+              .slice(0, 4);
+            if (!files.length) throw new Error('ComfyUI 任务完成，但工作流没有保存可用图片。');
+            live.update('saving');
+            const scratch = await mkdtemp(join(tmpdir(), 'novel-comfy-image-'));
+            try {
+              const assets = [];
+              for (const file of files) {
+                const response = await comfy('view', {
+                  query: { filename: file.filename, subfolder: file.subfolder ?? '', type: 'output' },
+                  binary: true,
+                });
+                const source = join(scratch, 'original' + /\.[a-z]+$/i.exec(file.filename)[0].toLowerCase());
+                await writeFile(source, await boundedImage(response));
+                const content = await encodeIllustration(
+                  config.ffmpeg,
+                  source,
+                  scratch,
+                  (bytes) => {
+                    const [width, height] = webpSize(bytes);
+                    return JSON.stringify(
+                      imageAsset(
+                        JSON.stringify({
+                          format: 'novel-illustration-v1',
+                          width,
+                          height,
+                          label: row.caption,
+                          data: 'data:image/webp;base64,' + bytes.toString('base64'),
+                        }),
+                      ),
+                    );
+                  },
+                  exec.signal,
+                );
+                assets.push(content);
               }
               assertScope(exec);
-              if (asset.data.length > maxImageBytes) throw new Error('ComfyUI 参考图超过 16 MiB。');
-            }
-            const chosen = visualAdjustments(config, args.adjustments);
-            const adjustments = asset
-              ? { ...referenceCanvas(config.controls, chosen, asset), ...chosen }
-              : chosen;
-            const values = {
-              ...config.values,
-              ...Object.fromEntries(
-                Object.entries(config.controls).map(([key, control]) => [key, control.default]),
-              ),
-              ...adjustments,
-              prompt: compileVisualPrompt(config, args, adjustments),
-            };
-            if (Object.hasOwn(config.bindings, 'negativePrompt')) {
-              const [node, input] = config.bindings.negativePrompt[0];
-              values.negativePrompt =
-                args.negative_prompt ?? values.negativePrompt ?? config.template[node].inputs[input];
-            } else if (args.negative_prompt !== undefined) throw new Error('此工作流没有负向提示词输入。');
-            const supportsSeed = Object.hasOwn(config.bindings, 'seed');
-            if (
-              args.seed !== undefined &&
-              (!supportsSeed || !Number.isSafeInteger(args.seed) || args.seed < 0 || args.seed >= 2 ** 32)
-            )
-              throw new Error('此预设不支持固定种子，或种子超出 0–4294967295。');
-            const seed = supportsSeed ? (args.seed ?? randomInt(2 ** 32)) : null;
-            if (supportsSeed) values.seed = seed;
-            if (Object.hasOwn(config.bindings, 'useReference')) values.useReference = Boolean(reference);
-            if (!reference && Object.hasOwn(config.bindings, 'reference') && values.reference === undefined) {
-              const [node, input] = config.bindings.reference[0];
-              values.reference = config.template[node].inputs[input];
-            }
-            if (asset) {
-              values.reference = '';
-              bindWorkflow(config.template, config.bindings, values);
-              const form = new FormData();
-              form.set(
-                'image',
-                new Blob([asset.data], { type: asset.mediaType }),
-                sha(asset.data) + '.' + asset.extension,
-              );
-              const uploaded = await comfy('upload/image', { form });
-              if (typeof uploaded.name !== 'string' || !uploaded.name)
-                throw new Error('ComfyUI 没有返回参考图回执。');
-              values.reference = uploaded.subfolder
-                ? uploaded.subfolder + '/' + uploaded.name
-                : uploaded.name;
-            }
-            const graph = bindWorkflow(config.template, config.bindings, values);
-            assertScope(exec);
-            const job = randomUUID();
-            db.run(
-              'INSERT INTO novel_comfy_jobs (id, book, call_id, revision, caption, recipe) VALUES (?, ?, ?, ?, ?, ?)',
-              job,
-              book,
-              exec.callId,
-              config.revision,
-              args.caption?.trim() || 'AI 插图',
-              JSON.stringify({
-                preset: config.id,
-                seed,
-                ...(Object.keys(adjustments).length ? { adjustments } : {}),
-              }),
-            );
-            row = find(book, job);
-            // A lost POST response is ambiguous. Retain the receipt and never submit it twice.
-            try {
-              const submitted = await comfy('prompt', { data: { prompt: graph } });
-              if (typeof submitted.prompt_id !== 'string' || !submitted.prompt_id) return result('unknown');
-              db.run('UPDATE novel_comfy_jobs SET prompt_id = ? WHERE id = ?', submitted.prompt_id, job);
-              row = find(book, job);
-            } catch (error) {
-              if (error.status >= 400 && error.status < 500) {
-                db.run('DELETE FROM novel_comfy_jobs WHERE id = ?', job);
-                throw new Error('ComfyUI 拒绝了工作流，请检查节点和模型配置。');
-              }
-              exec.signal.throwIfAborted();
-              return result('unknown');
-            }
-          }
-          const deadline = Date.now() + (action === 'generate' ? waitMs : 0);
-          let history;
-          do {
-            const response = await comfy('history/' + encodeURIComponent(row.prompt_id));
-            history = response[row.prompt_id];
-            if (history || Date.now() >= deadline) break;
-            await delay(Math.min(pollMs, Math.max(0, deadline - Date.now())), undefined, {
-              signal: exec.signal,
-            });
-          } while (true);
-          if (!history) return result('queued');
-          if (history.status?.status_str === 'error')
-            throw new Error('ComfyUI 生图失败，请检查工作流执行记录。');
-          const files = Object.values(history.outputs ?? {})
-            .flatMap((node) => node.images ?? [])
-            .filter((file) => file.type === 'output' && /\.(png|jpe?g|webp)$/i.test(file.filename))
-            .slice(0, 4);
-          if (!files.length) throw new Error('ComfyUI 任务完成，但工作流没有保存可用图片。');
-          const scratch = await mkdtemp(join(tmpdir(), 'novel-comfy-image-'));
-          try {
-            const assets = [];
-            for (const file of files) {
-              const response = await comfy('view', {
-                query: { filename: file.filename, subfolder: file.subfolder ?? '', type: 'output' },
-                binary: true,
+              const images = db.transactionSync(() => {
+                const published = assets.map((content) => ({
+                  imagePath: service.run({ kind: 'illustrations', action: 'upload', content }).imagePath,
+                  label: row.caption,
+                }));
+                const unique = [...new Map(published.map((image) => [image.imagePath, image])).values()];
+                db.run('UPDATE novel_comfy_jobs SET images = ? WHERE id = ?', JSON.stringify(unique), row.id);
+                return unique;
               });
-              const source = join(scratch, 'original' + /\.[a-z]+$/i.exec(file.filename)[0].toLowerCase());
-              await writeFile(source, await boundedImage(response));
-              const content = await encodeIllustration(
-                config.ffmpeg,
-                source,
-                scratch,
-                (bytes) => {
-                  const [width, height] = webpSize(bytes);
-                  return JSON.stringify(
-                    imageAsset(
-                      JSON.stringify({
-                        format: 'novel-illustration-v1',
-                        width,
-                        height,
-                        label: row.caption,
-                        data: 'data:image/webp;base64,' + bytes.toString('base64'),
-                      }),
-                    ),
-                  );
-                },
-                exec.signal,
-              );
-              assets.push(content);
+              return result('ready', { images });
+            } finally {
+              await rm(scratch, { recursive: true, force: true });
             }
-            assertScope(exec);
-            const images = db.transactionSync(() => {
-              const published = assets.map((content) => ({
-                imagePath: service.run({ kind: 'illustrations', action: 'upload', content }).imagePath,
-                label: row.caption,
-              }));
-              const unique = [...new Map(published.map((image) => [image.imagePath, image])).values()];
-              db.run('UPDATE novel_comfy_jobs SET images = ? WHERE id = ?', JSON.stringify(unique), row.id);
-              return unique;
-            });
-            return result('ready', { images });
           } finally {
-            await rm(scratch, { recursive: true, force: true });
+            watcher?.stop();
+            live.end();
           }
         },
       },

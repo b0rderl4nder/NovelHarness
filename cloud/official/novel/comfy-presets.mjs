@@ -87,6 +87,14 @@ export function referenceCanvas(controls, selected, { width, height }) {
 export async function loadComfyPresets(path) {
   const config = JSON.parse(await readFile(path, 'utf8'));
   const base = endpoint(config.comfy);
+  const alternatives = config.allowedComfyEndpoints ?? [];
+  if (
+    !Array.isArray(alternatives) ||
+    alternatives.length > 12 ||
+    alternatives.some((value) => typeof value !== 'string')
+  )
+    throw new Error('ComfyUI 可切换地址列表无效。');
+  const endpoints = [...new Set([base.href, ...alternatives.map((value) => endpoint(value).href)])];
   const defaultPreset = config.defaultPreset ?? 'default';
   const entries = Object.entries(config.presets ?? { default: config });
   if (!entries.length || entries.length > 12 || !entries.some(([id]) => id === defaultPreset))
@@ -153,7 +161,7 @@ export async function loadComfyPresets(path) {
         [...presets.keys()].find(supportsReference)));
   if (defaultReferencePreset !== undefined && !supportsReference(defaultReferencePreset))
     throw new Error('ComfyUI 默认参考图预设未绑定 reference。');
-  return { defaultPreset, defaultReferencePreset, presets };
+  return { defaultPreset, defaultReferencePreset, presets, endpoints };
 }
 
 export function compileVisualPrompt(preset, args, adjustments = {}) {

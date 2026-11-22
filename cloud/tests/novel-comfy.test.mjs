@@ -16,6 +16,12 @@ import { installNovelTools } from '../worker/novel-tools.mjs';
 import { compileVisualPrompt, loadComfyPresets, referenceCanvas } from '../official/novel/comfy-presets.mjs';
 import { createComfySettings } from '../official/novel/comfy-settings.mjs';
 import { createComfyProgress, watchComfy } from '../official/novel/comfy-progress.mjs';
+import {
+  createCharacterVisuals,
+  sheetGraph,
+  identityBindings,
+  visualCharacter,
+} from '../official/novel/character-visuals.mjs';
 import { WebSocketServer } from '../tools/node_modules/ws/wrapper.mjs';
 
 const sha = (text) => createHash('sha256').update(text).digest('hex');
@@ -34,6 +40,75 @@ const bindings = {
 const novelId = 'b-' + 'a'.repeat(32);
 const chapter = 'chapters/1.md';
 const reference = 'illustrations/' + 'b'.repeat(64) + '.json';
+
+test('author-locked character sheets are book-scoped and checked on changes', (t) => {
+  const raw = new DatabaseSync(':memory:');
+  t.after(() => raw.close());
+  const db = {
+    run: (sql, ...args) => raw.prepare(sql).run(...args),
+    one: (sql, ...args) => raw.prepare(sql).get(...args),
+    all: (sql, ...args) => raw.prepare(sql).all(...args),
+    transactionSync(fn) {
+      raw.exec('BEGIN');
+      try {
+        const value = fn();
+        raw.exec('COMMIT');
+        return value;
+      } catch (error) {
+        raw.exec('ROLLBACK');
+        throw error;
+      }
+    },
+  };
+  const store = createCharacterVisuals(db);
+  const person = visualCharacter('陆蘅');
+  const alternate = 'illustrations/' + 'c'.repeat(64) + '.json';
+  const initial = store.record(novelId, person, [reference]);
+  const pick = (value) => ({ id: person.id, revision: value.revision, imagePath: reference });
+  assert.throws(() => store.choose(novelId, pick(initial), () => {}), { status: 409 });
+  const candidates = store.record(novelId, person, [alternate]);
+  assert.throws(() => store.choose('b-' + 'a'.repeat(31) + 'b', pick(candidates), () => {}), { status: 404 });
+  assert.throws(() => store.choose(novelId, pick(initial), () => {}), { status: 409 });
+  assert.throws(
+    () =>
+      store.choose(novelId, pick(candidates), () => {
+        throw new Error('Missing asset');
+      }),
+    /Missing asset/,
+  );
+  assert.equal(store.resolve(novelId, ['陆蘅'])[0].chosen, null);
+  const locked = store.choose(novelId, pick(candidates), (path) => assert.equal(path, reference));
+  assert.equal(store.choose(novelId, pick(candidates), () => {}).revision, locked.revision);
+  assert.equal(createCharacterVisuals(db).resolve(novelId, ['　陆蘅　'])[0].chosen, reference);
+  assert.equal(store.record(novelId, person, [alternate]).chosen, reference);
+});
+
+test('turnaround sheets use three seeds and scene references require sufficient independent slots', () => {
+  const source = {
+    template: {
+      1: { class_type: 'Sampler', inputs: { seed: 0 } },
+      2: { class_type: 'Save', inputs: { images: ['1', 0] } },
+    },
+    bindings: { seed: [['1', 'seed']] },
+  };
+  const graph = sheetGraph(source, { seed: 12 });
+  assert.deepEqual(
+    [0, 1, 2].map((i) => graph[i + '-1'].inputs.seed),
+    [12, 13, 14],
+  );
+  assert.deepEqual(graph['2-2'].inputs.images, ['2-1', 0]);
+  assert.deepEqual(source.template[2].inputs.images, ['1', 0]);
+  assert.deepEqual(identityBindings({ bindings: { reference: [] } }, 1, false), ['reference']);
+  assert.equal(identityBindings({ bindings: { reference: [] } }, 2, false), null);
+  assert.deepEqual(
+    identityBindings(
+      { bindings: { reference: [], characterReference1: [], characterReference2: [] } },
+      2,
+      true,
+    ),
+    ['characterReference1', 'characterReference2'],
+  );
+});
 
 test('ComfyUI settings validate host endpoints, numeric controls and concurrent saves', async (t) => {
   const raw = new DatabaseSync(':memory:');
@@ -113,13 +188,13 @@ test('book-scoped agent can submit, resume after reload, and publish a candidate
     all: (sql, ...args) => raw.prepare(sql).all(...args),
     one: (sql, ...args) => raw.prepare(sql).get(...args),
     transactionSync(run) {
-      raw.exec('BEGIN');
+      raw.exec('SAVEPOINT fixture_tool');
       try {
         const result = run();
-        raw.exec('COMMIT');
+        raw.exec('RELEASE fixture_tool');
         return result;
       } catch (error) {
-        raw.exec('ROLLBACK');
+        raw.exec('ROLLBACK TO fixture_tool; RELEASE fixture_tool');
         throw error;
       }
     },
@@ -152,13 +227,26 @@ test('book-scoped agent can submit, resume after reload, and publish a candidate
       referenceUploads.push(payload);
       return send({ name: 'upload.webp', subfolder: 'fixture' });
     }
-    if (url.pathname === '/history/comfy-receipt')
+    if (url.pathname === '/history/comfy-receipt') {
+      const files = Object.hasOwn(rendered.at(-1) ?? {}, '0-5')
+        ? ['one.webp', 'two.webp', 'three.webp']
+        : ['one.webp'];
       return send(
         ready
-          ? { 'comfy-receipt': { outputs: { 8: { images: [{ type: 'output', filename: 'one.webp' }] } } } }
+          ? {
+              'comfy-receipt': {
+                outputs: { 8: { images: files.map((filename) => ({ type: 'output', filename })) } },
+              },
+            }
           : {},
       );
-    if (url.pathname === '/view') return res.end(bytes);
+    }
+    if (url.pathname === '/view') {
+      const version = ['one.webp', 'two.webp', 'three.webp'].indexOf(url.searchParams.get('filename'));
+      const sample = Buffer.from(bytes);
+      if (version > 0) sample[sample.length - 1] = version;
+      return res.end(sample);
+    }
     res.writeHead(404).end();
   });
   server.listen(0, '127.0.0.1');
@@ -249,8 +337,13 @@ test('book-scoped agent can submit, resume after reload, and publish a candidate
             assert.equal(id, novelId);
             assert.equal(operation.kind, 'illustrations');
             if (operation.action === 'read') {
-              assert.equal(operation.imagePath, reference);
-              return { data: 'data:image/webp;base64,' + bytes.toString('base64') };
+              if (operation.imagePath === reference)
+                return { data: 'data:image/webp;base64,' + bytes.toString('base64') };
+              const match = uploads.find(
+                (item) => operation.imagePath === 'illustrations/' + sha(item) + '.json',
+              );
+              assert(match);
+              return imageAsset(match);
             }
             assert.equal(operation.action, 'upload');
             assert.equal(imageAsset(operation.content).label, '灯塔');
@@ -270,7 +363,19 @@ test('book-scoped agent can submit, resume after reload, and publish a candidate
       );
   }
   const call = tools(novelId);
-  const request = { action: 'generate', prompt: '夜里的灯塔和一束微弱暖光', caption: '灯塔', reference };
+  const request = {
+    action: 'generate',
+    characters: [],
+    prompt: '夜里的灯塔和一束微弱暖光',
+    caption: '灯塔',
+    reference,
+  };
+  const legacyCall = { ...request };
+  delete legacyCall.characters;
+  assert.equal((await call(legacyCall, 'no-cast')).status, 'identify-characters');
+  const drawing = { ...request, characters: ['陆蘅'], reference: undefined };
+  assert.equal((await call(drawing, 'before-lock')).status, 'character-design-needed');
+  assert.equal(prompts, 0);
   const inspected = await call({ action: 'inspect', reference }, 'inspect');
   assert.equal(inspected.attachment.attachmentId, 'saved-gallery-image');
   const queued = await call(request);
@@ -365,7 +470,13 @@ test('book-scoped agent can submit, resume after reload, and publish a candidate
   assert.deepEqual(references.references, [
     { id: 'chat:chat-digest', name: '图.png', width: 32, height: 32 },
   ]);
-  const editArgs = { action: 'generate', preset: 'layout', prompt: '换一盏灯', caption: '灯塔' };
+  const editArgs = {
+    action: 'generate',
+    characters: [],
+    preset: 'layout',
+    prompt: '换一盏灯',
+    caption: '灯塔',
+  };
   await assert.rejects(
     tools('b-' + 'b'.repeat(32), multi)({ ...editArgs, reference: references.references[0].id }, 'foreign'),
     /当前对话没有/,
@@ -376,12 +487,13 @@ test('book-scoped agent can submit, resume after reload, and publish a candidate
     /超出/,
   );
   await assert.rejects(
-    profiled({ action: 'generate', prompt: '灯塔', seed: 0 }, 'no-seed'),
+    profiled({ action: 'generate', characters: [], prompt: '灯塔', seed: 0 }, 'no-seed'),
     /不支持固定种子/,
   );
   const selected = await profiled(
     {
       action: 'generate',
+      characters: [],
       seed: 0,
       reference: 'chat:latest',
       adjustments: [{ name: 'width', number: 1152 }],
@@ -406,6 +518,36 @@ test('book-scoped agent can submit, resume after reload, and publish a candidate
   assert.equal(JSON.parse(layoutGraph['5'].inputs.text).items[0].caption, '左边灯塔');
   assert.equal(JSON.parse(layoutGraph['5'].inputs.text).items[0].bbox[1], -530);
   assert.match(JSON.parse(layoutGraph['5'].inputs.text).summary.caption, /暖灯与海雾/);
+  const sheet = await call(
+    {
+      action: 'character_sheet',
+      character: '陆蘅',
+      caption: '灯塔',
+      prompt: '陆蘅，平刘海，白围巾。',
+      seed: 37,
+    },
+    'lu-sheet',
+  );
+  assert.equal(sheet.status, 'character-options');
+  assert.equal(sheet.characterVisual.candidates.length, 3);
+  assert.equal(sheet.characterVisual.chosen, null);
+  assert.equal(rendered.at(-1)['2-6'].inputs.seed, 39);
+  assert.match(rendered.at(-1)['0-5'].inputs.text, /full body front, profile and back/);
+  assert.equal((await call(drawing, 'still-needs-lock')).status, 'character-design-needed');
+  const store = createCharacterVisuals(db);
+  const chosen = sheet.characterVisual.candidates[0];
+  store.choose(
+    novelId,
+    { id: sheet.characterVisual.id, revision: sheet.characterVisual.revision, imagePath: chosen },
+    () => {},
+  );
+  const scene = await profiled({ ...drawing, preset: 'paint', style: '手绘水彩' }, 'locked-reference');
+  assert.equal(scene.status, 'ready');
+  assert.equal(scene.preset, 'layout');
+  assert.deepEqual(scene.characterReferences, [{ name: '陆蘅', imagePath: chosen }]);
+  assert.equal(rendered.at(-1)['4'].inputs.image, 'fixture/upload.webp');
+  assert.match(rendered.at(-1)['5'].inputs.text, /手绘水彩/);
+  assert.equal((await call({ action: 'characters' }, 'check-lock')).characters[0].chosen, chosen);
 });
 
 test('MOSS regions compile into centered pixel boxes while keeping style, shot and light separate', () => {

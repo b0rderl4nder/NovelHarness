@@ -3,6 +3,7 @@ import { openTaskProposal } from './proposal-navigation.mjs';
 import { makeDocumentClient } from './manuscript-core.mjs';
 import { openIllustrationLightbox } from './illustration-editor.mjs';
 import { illustrationPath, imageAsset } from '../../../worker/shared/illustrations.mjs';
+import { characterSheets, createCharacterSheetReview } from './character-sheet-review.mjs';
 
 // Presentation only, read directly from the ORIGINAL native Tool block and its
 // incremental PartialArguments. No provider stream, copied transcript or draft.
@@ -53,6 +54,7 @@ export function proposalToolModel(toolName, block) {
 export function resultImages(result, cwd) {
   if (
     !/^b-[a-f0-9]{32}$/.test(result?.bookId ?? '') ||
+    result.status === 'character-options' ||
     (cwd && cwd.replace(/\/$/, '') !== '/workspace/novels/' + result.bookId) ||
     !Array.isArray(result.images)
   )
@@ -63,24 +65,31 @@ export function resultImages(result, cwd) {
     .map((item) => ({ ...item, bookId: result.bookId }));
 }
 
-export function turnImages(calls, cwd) {
+export function turnImageResults(calls, cwd) {
   const images = new Map();
+  const sheets = new Map();
   function visit(block) {
     if (block.name === 'novel_generate_image' && block.kind === 'tool-result' && !block.isError) {
-      for (const image of resultImages(proposalToolModel(block.name, block).result, cwd)) {
+      const { result } = proposalToolModel(block.name, block);
+      for (const image of resultImages(result, cwd)) {
         if (!images.has(image.imagePath)) images.set(image.imagePath, image);
+      }
+      for (const sheet of characterSheets(result, cwd)) {
+        const key = sheet.bookId + ':' + sheet.character.id;
+        const previous = sheets.get(key);
+        if (!previous || result.images?.length || !previous.candidates.length) sheets.set(key, sheet);
       }
     }
     for (const child of block.subCalls ?? []) visit(child);
   }
   for (const call of calls) if (call.root) visit(call.root);
-  return [...images.values()];
+  return { images: [...images.values()], sheets: [...sheets.values()] };
 }
 
 export function installProposalToolViews(ctx, React) {
   const h = React.createElement,
     ProseEditor = createProseEditor(React);
-  function GeneratedImage({ bookId, imagePath, label }) {
+  function GeneratedImage({ bookId, imagePath, label, wide = false }) {
     const [state, setState] = React.useState({});
     const dialog = React.useRef(null);
     const caption = label || 'AI 插图';
@@ -101,7 +110,7 @@ export function installProposalToolViews(ctx, React) {
     return state.asset
       ? h(
           'figure',
-          { className: 'novel-generated-image' },
+          { className: 'novel-generated-image' + (wide ? ' novel-generated-image-wide' : '') },
           h(
             'button',
             {
@@ -123,6 +132,7 @@ export function installProposalToolViews(ctx, React) {
         )
       : h('p', { role: 'status' }, state.error ? '预览加载失败，可在本书图集查看。' : '正在载入插图…');
   }
+  const CharacterSheetReview = createCharacterSheetReview(React, GeneratedImage);
   function DrawingProgress({ book, call, caption }) {
     const [state, setState] = React.useState(null);
     const [previewError, setPreviewError] = React.useState(0);
@@ -188,12 +198,17 @@ export function installProposalToolViews(ctx, React) {
     const { result, settled, failed, raw } = proposalToolModel(toolName, block);
     const action = block.args?.text?.('action');
     if (
-      ['inspect', 'presets', 'references'].includes(action) ||
+      ['inspect', 'presets', 'references', 'characters'].includes(action) ||
       result?.presets ||
       result?.references ||
       (settled && !failed && !result?.status && !result?.images)
     )
       return null;
+    const sheets = characterSheets(result, cwd);
+    if (sheets.length)
+      return sheets.map((sheet) =>
+        h(CharacterSheetReview, { key: sheet.bookId + ':' + sheet.character.id, ...sheet }),
+      );
     const images = resultImages(result, cwd);
     if (images.length)
       return h(
@@ -206,9 +221,19 @@ export function installProposalToolViews(ctx, React) {
       return h(
         'section',
         { className: 'novel-proposal-tool', 'aria-label': 'AI 生图进度' },
-        h(DrawingProgress, { book, call: callId ?? block.callId, caption: block.args?.text?.('caption') }),
+        h(DrawingProgress, {
+          book,
+          call: callId ?? block.callId,
+          caption: block.args?.text?.('caption') ?? block.args?.text?.('character'),
+        }),
       );
     }
+    const characterStatus = {
+      'character-options': '候选人设图暂未就绪',
+      'character-design-needed': '这个场景需要先定妆',
+      'character-reference-unavailable': '当前工作流缺少足够的人物参考图输入',
+      'identify-characters': '正在确认画面角色',
+    }[result?.status];
     const message = failed
       ? '插图生成失败'
       : result?.status === 'queued'
@@ -217,7 +242,7 @@ export function installProposalToolViews(ctx, React) {
           ? '先保存本章和已生成的插图'
           : result?.status === 'unknown'
             ? '提交结果未确认，请在 ComfyUI 核对队列'
-            : '插图结果暂无法读取';
+            : (characterStatus ?? '插图结果暂无法读取');
     return h(
       'section',
       { className: 'novel-proposal-tool', 'aria-label': 'AI 生图执行详情' },
@@ -228,14 +253,21 @@ export function installProposalToolViews(ctx, React) {
   function GeneratedImagesTail({ turn, chat }) {
     const source = chat.getSnapshot().nodes.turnDataSource(turn.turn, 'tool-call');
     const calls = React.useSyncExternalStore(source.subscribe, source.getSnapshot);
-    const images = turnImages(calls);
-    return images.length
-      ? h(
-          'section',
-          { className: 'novel-proposal-tool', 'aria-label': '插图结果' },
-          ...images.map((image) => h(GeneratedImage, { key: image.imagePath, ...image })),
-        )
-      : null;
+    const { images, sheets } = turnImageResults(calls);
+    return h(
+      React.Fragment,
+      null,
+      ...sheets.map((sheet) =>
+        h(CharacterSheetReview, { key: sheet.bookId + ':' + sheet.character.id, ...sheet }),
+      ),
+      images.length
+        ? h(
+            'section',
+            { className: 'novel-proposal-tool', 'aria-label': '插图结果' },
+            ...images.map((image) => h(GeneratedImage, { key: image.imagePath, ...image })),
+          )
+        : null,
+    );
   }
   function ProposalToolView({ toolName, block, useDisclosure }) {
     const model = proposalToolModel(toolName, block);

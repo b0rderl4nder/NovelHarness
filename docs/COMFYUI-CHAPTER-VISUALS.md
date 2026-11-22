@@ -8,6 +8,8 @@
 
 聊天会在插图任务运行时显示队列或当前采样步骤。支持运行中预览的 ComfyUI 工作流会同时发来临时小图。成图存入图集后就在聊天里显示，回合结束、工具详情折叠后仍能查看。浏览器通过 NovelHarness 读取进度和图片，由主机连接 ComfyUI。 [ComfyUI WebSocket 接口](https://docs.comfy.org/development/comfyui-server/comms_routes)
 
+有具名角色首次出图时，助手会把人设候选直接发在对话里。点「候选 A / B / C」切换，点大图看细节，然后点「设为定妆」。同一本书里换画风仍使用已选图，改选时用「更换定妆」。等待选图期间可继续写正文。
+
 ```json
 {
   "comfy": "http://127.0.0.1:18188",

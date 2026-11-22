@@ -6,7 +6,14 @@ import { endpoint } from '../../shared/comfy-render.mjs';
 export const regionLabels = ['character', 'object', 'text'];
 const presetId = /^[a-z][a-z0-9-]{0,39}$/;
 const text = (value, max) => typeof value === 'string' && value.trim() && value.length <= max;
-const internalBindings = new Set(['prompt', 'negativePrompt', 'seed', 'reference', 'useReference']);
+const internalBindings = new Set([
+  'prompt',
+  'negativePrompt',
+  'seed',
+  'reference',
+  'useReference',
+  ...[1, 2, 3, 4].flatMap((i) => ['characterReference' + i, 'useCharacterReference' + i]),
+]);
 
 function readControls(template, bindings, values, entries) {
   const controls = Object.create(null);

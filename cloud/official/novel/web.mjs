@@ -289,6 +289,36 @@ export async function startNovelWeb(
       return url.pathname === '/'
         ? new Response(null, { status: 302, headers: { location: '/login', 'cache-control': 'no-store' } })
         : json({ error: '请先登录。' }, 401);
+    const visualBook = /^\/api\/novels\/(b-[a-f0-9]{32})\/character-visuals$/.exec(url.pathname)?.[1];
+    if (visualBook) {
+      const comfy = host.comfy;
+      if (!comfy) return json({ error: '此空间未配置人物定妆。' }, 404);
+      try {
+        const book = comfy.characterBook(visualBook);
+        book.run({ kind: 'identity' });
+        if (request.method === 'GET') return json({ characters: comfy.characterVisuals.list(visualBook) });
+        if (request.method !== 'PUT') return json({ error: '不支持此请求方式。' }, 405);
+        if (!request.headers.get('content-type')?.startsWith('application/json'))
+          return json({ error: '请使用 JSON 提交定妆选择。' }, 415);
+        const body = await boundedBody(request, 4096);
+        let input;
+        try {
+          input = JSON.parse(body.toString('utf8'));
+        } catch {
+          return json({ error: '定妆选择格式无效。' }, 400);
+        }
+        return json(
+          comfy.characterVisuals.choose(visualBook, input, (imagePath) =>
+            book.run({ kind: 'illustrations', action: 'read', imagePath }),
+          ),
+        );
+      } catch (error) {
+        return json(
+          { error: error.status ? error.message : '无法读取或保存人物定妆。' },
+          error.status ?? 503,
+        );
+      }
+    }
     if (url.pathname === '/api/comfy/progress' && request.method === 'GET') {
       const image = url.searchParams.has('image');
       const state = host.comfy?.progress.read(

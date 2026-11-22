@@ -1597,6 +1597,75 @@ fieldset.novel-canon-detail {
   margin-top: 4px;
   color: var(--dsw-alias-label-secondary);
 }
+.novel-character-sheet {
+  display: grid;
+  gap: 10px;
+  width: 100%;
+  border: 1px solid var(--dsw-alias-border-l3);
+  border-radius: 6px;
+  padding: 12px;
+  margin: 8px 0;
+  background: var(--dsw-alias-bg-layer-1);
+  box-sizing: border-box;
+}
+.novel-character-sheet header,
+.novel-character-sheet-options,
+.novel-character-sheet-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.novel-character-sheet header {
+  justify-content: space-between;
+}
+.novel-character-sheet header span,
+.novel-character-sheet-note {
+  color: var(--dsw-alias-label-secondary);
+  font-size: 0.9em;
+}
+.novel-character-sheet .novel-generated-image {
+  min-width: 0;
+  margin: 0;
+}
+.novel-character-sheet .novel-generated-image-wide button {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  padding: 0;
+  cursor: zoom-in;
+}
+.novel-character-sheet .novel-generated-image-wide img {
+  width: 100%;
+  height: 100%;
+  max-height: none;
+  object-fit: contain;
+}
+.novel-character-sheet button {
+  border: 1px solid var(--dsw-alias-border-l3);
+  border-radius: 4px;
+  padding: 5px 10px;
+  min-height: 34px;
+  color: inherit;
+  background: var(--dsw-alias-bg-layer-2);
+  font: inherit;
+}
+.novel-character-sheet-options button[aria-pressed='true'] {
+  border-color: var(--dsw-alias-state-business-primary);
+  color: var(--dsw-alias-state-business-primary);
+}
+.novel-character-sheet button.novel-character-sheet-confirm:not(:disabled) {
+  border-color: var(--dsw-alias-state-business-primary);
+  background: var(--dsw-alias-state-business-primary);
+  color: var(--dsw-alias-bg-base);
+}
+@media (pointer: coarse) {
+  .novel-character-sheet button {
+    min-height: 44px;
+  }
+}
 .novel-proposal-tool progress {
   display: block;
   width: min(100%, 16rem);

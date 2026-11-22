@@ -9,6 +9,14 @@ import { chatImageReferences, loadChatImage } from './comfy-chat-images.mjs';
 import { chapterDeliveryFor } from './comfy-chapter-delivery.mjs';
 import { createComfySettings } from './comfy-settings.mjs';
 import { createComfyProgress, watchComfy } from './comfy-progress.mjs';
+import {
+  characterSheetLayout,
+  createCharacterVisuals,
+  identityBindings,
+  sheetCanvas,
+  sheetGraph,
+  visualCharacter,
+} from './character-visuals.mjs';
 
 const maxImageBytes = 16 * 1024 * 1024;
 const jobId = /^[0-9a-f-]{36}$/;
@@ -46,18 +54,51 @@ export function installComfyTools(
     db.one('SELECT * FROM novel_comfy_jobs WHERE book = ? AND call_id = ?', book, id);
   const settings = createComfySettings(db, configPath);
   const progress = createComfyProgress();
-  instance.comfy = { settings, progress };
+  const characterVisuals = createCharacterVisuals(db);
+  instance.comfy = {
+    settings,
+    progress,
+    characterVisuals,
+    characterBook: (book) => makeDocumentService(fs, db, book),
+  };
   return installNovelTools(instance.sessions.context, ({ root, assertScope }) => {
     const book = root.slice('/workspace/novels/'.length);
     return [
       {
         name: 'novel_generate_image',
         description:
-          '画图、改图、按参考图生成新图。presets 查看工作流与参数，prompt 由你写。generate 成图后入图集；inspect 看成图。为章节画图时，同一场景沿用同一 caption，先完成章文和首版配图，再按判断重画；revises 填要重画的已有图集路径。用 chat:latest 或图集路径作参考。queued 用 status 查询；在已有正文中移动插图用 novel_illustration。',
+          '画图、改图和生成候选人设图。generate 的 characters 必须列出画面所有具名人物，空镜或路人用空数组。任何画风下，未定妆角色先用 character_sheet 生成同一角色的三张候选，由作者选择后再画有该角色的情节图。characters 可查询定妆状态（action=characters）。已定妆会自动传入真实参考图，换画风继续用同一角色名；写正文不必等待定妆。presets 查看参数，inspect 看图，queued 用 status 查询。章节首版入书后再按判断重画，revises 填图集路径。',
         parameters: {
           type: 'object',
           properties: {
-            action: { type: 'string', enum: ['presets', 'references', 'inspect', 'generate', 'status'] },
+            action: {
+              type: 'string',
+              enum: [
+                'presets',
+                'references',
+                'inspect',
+                'generate',
+                'status',
+                'characters',
+                'character_sheet',
+              ],
+            },
+            character: {
+              type: 'string',
+              maxLength: 80,
+              description: 'character_sheet 的一个角色姓名，优先使用书中固定叫法。',
+            },
+            new_variants: {
+              type: 'boolean',
+              description: '作者明确想看新一批候选时才用，会保留已选的人设图。',
+            },
+            characters: {
+              type: 'array',
+              items: { type: 'string', maxLength: 80 },
+              maxItems: 4,
+              uniqueItems: true,
+              description: 'generate 必填，画面中所有具名人物的姓名，非人物图用 []。',
+            },
             prompt: { type: 'string', maxLength: 12000 },
             caption: { type: 'string', maxLength: 160 },
             revises: { type: 'string', description: '可选，本次重画对应的已有 illustrations/ 路径。' },
@@ -140,17 +181,23 @@ export function installComfyTools(
                 ? '查看对话参考图'
                 : action === 'inspect'
                   ? '查看生成的图'
-                  : action === 'status'
-                    ? '查询插图任务'
-                    : '生成插图',
+                  : action === 'character_sheet'
+                    ? '生成候选人设图'
+                    : action === 'characters'
+                      ? '查看已定妆角色'
+                      : action === 'status'
+                        ? '查询插图任务'
+                        : '生成插图',
         }),
         async execute(args, exec) {
           const { action, prompt, reference, job_id: id } = args;
+          const sheet = action === 'character_sheet';
+          const generation = sheet || action === 'generate';
           const references = () => chatImageReferences(sessionQuery, exec.agent.session.id, exec.signal);
           const service = makeDocumentService(fs, db, book);
           const chapterDelivery = () => chapterDeliveryFor(sessionQuery, exec, root, book, service);
           const keys =
-            action === 'presets' || action === 'references'
+            action === 'presets' || action === 'references' || action === 'characters'
               ? ['action']
               : action === 'status'
                 ? ['action', 'job_id']
@@ -160,7 +207,7 @@ export function installComfyTools(
                       'action',
                       'prompt',
                       'caption',
-                      'revises',
+                      ...(sheet ? ['character', 'new_variants'] : ['characters', 'revises']),
                       'reference',
                       'preset',
                       'seed',
@@ -172,16 +219,26 @@ export function installComfyTools(
                       'regions',
                     ];
           if (
-            !['presets', 'references', 'inspect', 'status', 'generate'].includes(action) ||
+            ![
+              'presets',
+              'references',
+              'inspect',
+              'status',
+              'generate',
+              'characters',
+              'character_sheet',
+            ].includes(action) ||
             Object.keys(args).some((key) => !keys.includes(key)) ||
             (action === 'inspect' && typeof reference !== 'string') ||
             (args.revises !== undefined && !/^illustrations\/[a-f0-9]{64}\.json$/.test(args.revises)) ||
             (action === 'status'
               ? typeof id !== 'string' || !jobId.test(id)
-              : action === 'generate' &&
-                (typeof prompt !== 'string' || !prompt.trim() || prompt.length > 12000))
+              : generation && (typeof prompt !== 'string' || !prompt.trim() || prompt.length > 12000))
           )
             throw new Error('生图任务参数无效。');
+          assertScope(exec);
+          if (action === 'characters')
+            return JSON.stringify({ bookId: book, characters: characterVisuals.list(book) });
           if (action === 'references') {
             const found = await references();
             assertScope(exec);
@@ -208,8 +265,7 @@ export function installComfyTools(
               ...(pending ? { chapterDelivery: pending } : {}),
             });
           }
-          let row =
-            action === 'status' ? find(book, id) : action === 'generate' ? findCall(book, exec.callId) : null;
+          let row = action === 'status' ? find(book, id) : generation ? findCall(book, exec.callId) : null;
           if (!row && action === 'status') throw new Error('找不到本书中的生图任务。');
           const result = (status, extra = {}) =>
             JSON.stringify({
@@ -219,8 +275,40 @@ export function installComfyTools(
               ...(row.recipe ? JSON.parse(row.recipe) : {}),
               ...extra,
             });
-          if (row?.images) return result('ready', { images: JSON.parse(row.images) });
+          const characterFromRow = () => (row?.recipe ? JSON.parse(row.recipe).characterSheet : undefined);
+          const completed = (images) => {
+            const character = characterFromRow();
+            return character
+              ? result('character-options', {
+                  images,
+                  characterVisual: characterVisuals.get(book, character),
+                })
+              : result('ready', { images });
+          };
+          if (row?.images) return completed(JSON.parse(row.images));
           if (row && !row.prompt_id) return result('unknown');
+          const sheetCharacter = !row && sheet ? visualCharacter(args.character) : null;
+          const state = (status, extra) => JSON.stringify({ status, bookId: book, ...extra });
+          let cast = [];
+          if (!row && action === 'generate') {
+            if (args.characters === undefined)
+              return state('identify-characters', {
+                next: '重试时传入 characters，列出画面中全部具名角色，无角色时填 []。',
+              });
+            cast = characterVisuals.resolve(book, args.characters);
+            const pending = cast.filter(({ chosen }) => !chosen);
+            if (pending.length)
+              return state('character-design-needed', {
+                characters: pending,
+                next: '为缺少候选的角色生成候选人设图，有候选的等作者定妆。正文可继续交付。',
+              });
+          }
+          if (sheetCharacter && !args.new_variants) {
+            const characterVisual = characterVisuals.get(book, sheetCharacter);
+            if (characterVisual.chosen) return state('character-locked', { characterVisual });
+            if (characterVisual.candidates.length >= 2)
+              return state('character-options', { characterVisual });
+          }
           if (!row && action === 'generate' && (args.caption?.trim() || args.revises)) {
             const pending = await chapterDelivery();
             assertScope(exec);
@@ -245,11 +333,12 @@ export function installComfyTools(
                 requiresReference: preset.requiresReference,
                 seed: Object.hasOwn(preset.bindings, 'seed'),
                 negativePrompt: Object.hasOwn(preset.bindings, 'negativePrompt'),
+                characterSlots: [1, 2, 3, 4].filter((n) => identityBindings(preset, n, false)).length,
                 controls: preset.controls,
                 ...(preset.guidance ? { guidance: preset.guidance } : {}),
               })),
             });
-          const config = row
+          let config = row
             ? row.connection
               ? JSON.parse(row.connection)
               : [...available.presets.values()].find((preset) => preset.revision === row.revision)
@@ -263,26 +352,55 @@ export function installComfyTools(
             throw new Error(
               row ? '生图预设已改变，无法从另一套预设查询此任务。' : '没有这个生图预设，请先查看预设列表。',
             );
+          let identitySlots = [];
+          let style = args.style;
+          if (cast.length) {
+            const hasSceneReference = Boolean(reference);
+            identitySlots = identityBindings(config, cast.length, hasSceneReference);
+            if (!identitySlots) {
+              const candidates = new Set([
+                available.presets.get(available.defaultReferencePreset),
+                ...available.presets.values(),
+              ]);
+              for (const candidate of candidates) {
+                if (!candidate) continue;
+                const next = identityBindings(candidate, cast.length, hasSceneReference);
+                if (!next) continue;
+                style ??= config.label;
+                config = candidate;
+                identitySlots = next;
+                break;
+              }
+            }
+            if (!identitySlots)
+              return state('character-reference-unavailable', {
+                characters: cast.map(({ name }) => name),
+                next: '当前工作流没有足够独立角色参考图输入，请选择兼容工作流。',
+              });
+          }
           const base = new URL(config.base);
           const comfy = (route, options) => request(base, route, { ...options, signal: exec.signal });
           const live = progress.begin(book, exec.callId);
           let watcher;
           try {
             if (!row) {
-              if (config.requiresReference && !reference) throw new Error('此编辑预设需要提供参考图。');
-              let asset;
-              if (reference) {
-                if (!Object.hasOwn(config.bindings, 'reference'))
-                  throw new Error('此工作流未配置参考图输入。');
-                if (reference.startsWith('chat:')) {
-                  asset = await loadChatImage(attachments, await references(), reference, exec.signal);
+              const refs = Object.fromEntries(
+                cast.map(({ chosen }, index) => [identitySlots[index], chosen]),
+              );
+              if (reference) refs.reference = reference;
+              if (config.requiresReference && !refs.reference) throw new Error('此编辑预设需要提供参考图。');
+              const assets = {};
+              for (const [key, path] of Object.entries(refs)) {
+                if (!Object.hasOwn(config.bindings, key)) throw new Error('此工作流未配置参考图输入。');
+                if (path.startsWith('chat:')) {
+                  assets[key] = await loadChatImage(attachments, await references(), path, exec.signal);
                 } else {
                   const { data, width, height } = service.run({
                     kind: 'illustrations',
                     action: 'read',
-                    imagePath: reference,
+                    imagePath: path,
                   });
-                  asset = {
+                  assets[key] = {
                     data: Buffer.from(data.split(',')[1], 'base64'),
                     mediaType: 'image/webp',
                     extension: 'webp',
@@ -291,19 +409,27 @@ export function installComfyTools(
                   };
                 }
                 assertScope(exec);
-                if (asset.data.length > maxImageBytes) throw new Error('ComfyUI 参考图超过 16 MiB。');
+                if (assets[key].data.length > maxImageBytes) throw new Error('ComfyUI 参考图超过 16 MiB。');
               }
               const chosen = visualAdjustments(config, args.adjustments);
-              const adjustments = asset
-                ? { ...referenceCanvas(config.controls, chosen, asset), ...chosen }
-                : chosen;
+              const adjustments = sheetCharacter
+                ? { ...sheetCanvas(config, chosen), ...chosen }
+                : reference
+                  ? { ...referenceCanvas(config.controls, chosen, assets.reference), ...chosen }
+                  : chosen;
               const values = {
                 ...config.values,
                 ...Object.fromEntries(
                   Object.entries(config.controls).map(([key, control]) => [key, control.default]),
                 ),
                 ...adjustments,
-                prompt: compileVisualPrompt(config, args, adjustments),
+                prompt: compileVisualPrompt(
+                  config,
+                  sheetCharacter
+                    ? { ...args, prompt: characterSheetLayout + '\n\n' + prompt }
+                    : { ...args, style },
+                  adjustments,
+                ),
               };
               if (Object.hasOwn(config.bindings, 'negativePrompt')) {
                 const [node, input] = config.bindings.negativePrompt[0];
@@ -318,18 +444,21 @@ export function installComfyTools(
                 throw new Error('此预设不支持固定种子，或种子超出 0–4294967295。');
               const seed = supportsSeed ? (args.seed ?? randomInt(2 ** 32)) : null;
               if (supportsSeed) values.seed = seed;
-              if (Object.hasOwn(config.bindings, 'useReference')) values.useReference = Boolean(reference);
-              if (
-                !reference &&
-                Object.hasOwn(config.bindings, 'reference') &&
-                values.reference === undefined
-              ) {
-                const [node, input] = config.bindings.reference[0];
-                values.reference = config.template[node].inputs[input];
+              for (const key of [
+                'reference',
+                'characterReference1',
+                'characterReference2',
+                'characterReference3',
+                'characterReference4',
+              ]) {
+                if (!Object.hasOwn(config.bindings, key)) continue;
+                const [node, input] = config.bindings[key][0];
+                const switchKey = 'use' + key[0].toUpperCase() + key.slice(1);
+                if (Object.hasOwn(config.bindings, switchKey)) values[switchKey] = Boolean(assets[key]);
+                values[key] = assets[key] ? '' : (values[key] ?? config.template[node].inputs[input]);
               }
-              if (asset) {
-                values.reference = '';
-                bindWorkflow(config.template, config.bindings, values);
+              if (Object.keys(assets).length) bindWorkflow(config.template, config.bindings, values);
+              for (const [key, asset] of Object.entries(assets)) {
                 const form = new FormData();
                 form.set(
                   'image',
@@ -339,11 +468,11 @@ export function installComfyTools(
                 const uploaded = await comfy('upload/image', { form });
                 if (typeof uploaded.name !== 'string' || !uploaded.name)
                   throw new Error('ComfyUI 没有返回参考图回执。');
-                values.reference = uploaded.subfolder
-                  ? uploaded.subfolder + '/' + uploaded.name
-                  : uploaded.name;
+                values[key] = uploaded.subfolder ? uploaded.subfolder + '/' + uploaded.name : uploaded.name;
               }
-              const graph = bindWorkflow(config.template, config.bindings, values);
+              const graph = sheetCharacter
+                ? sheetGraph(config, values)
+                : bindWorkflow(config.template, config.bindings, values);
               assertScope(exec);
               const job = randomUUID();
               db.run(
@@ -352,10 +481,14 @@ export function installComfyTools(
                 book,
                 exec.callId,
                 config.revision,
-                args.caption?.trim() || 'AI 插图',
+                args.caption?.trim() || (sheetCharacter ? sheetCharacter.name + ' · 候选人设图' : 'AI 插图'),
                 JSON.stringify({
                   preset: config.id,
                   seed,
+                  ...(sheetCharacter ? { characterSheet: sheetCharacter } : {}),
+                  ...(cast.length
+                    ? { characterReferences: cast.map(({ name, chosen }) => ({ name, imagePath: chosen })) }
+                    : {}),
                   ...(Object.keys(adjustments).length ? { adjustments } : {}),
                 }),
                 JSON.stringify({ base: base.href, ffmpeg: config.ffmpeg }),
@@ -387,7 +520,7 @@ export function installComfyTools(
                 return result('unknown');
               }
             } else live.update('waiting');
-            const deadline = Date.now() + (action === 'generate' ? waitMs : 0);
+            const deadline = Date.now() + (generation ? waitMs : 0);
             let history;
             do {
               const response = await comfy('history/' + encodeURIComponent(row.prompt_id));
@@ -445,10 +578,17 @@ export function installComfyTools(
                   label: row.caption,
                 }));
                 const unique = [...new Map(published.map((image) => [image.imagePath, image])).values()];
+                const character = characterFromRow();
+                if (character)
+                  characterVisuals.record(
+                    book,
+                    character,
+                    unique.map(({ imagePath }) => imagePath),
+                  );
                 db.run('UPDATE novel_comfy_jobs SET images = ? WHERE id = ?', JSON.stringify(unique), row.id);
                 return unique;
               });
-              return result('ready', { images });
+              return completed(images);
             } finally {
               await rm(scratch, { recursive: true, force: true });
             }

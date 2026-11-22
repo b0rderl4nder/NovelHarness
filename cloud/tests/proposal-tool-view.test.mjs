@@ -4,7 +4,7 @@ import {
   proposalToolModel,
   installProposalToolViews,
   resultImages,
-  turnImages,
+  turnImageResults,
 } from '../pages/public/novel-assets/proposal-tool-view.mjs';
 
 test('live candidate presentation reads native incremental arguments and never treats partial or failed calls as saved', () => {
@@ -96,7 +96,7 @@ test('a generated thumbnail uses the stored asset and reports its intrinsic dime
     ],
   };
   assert.deepEqual(resultImages(JSON.parse(root.content[0].text), '/workspace/novels/other'), []);
-  assert.equal(turnImages([{ root }, { root }], cwd).length, 1);
+  assert.equal(turnImageResults([{ root }, { root }], cwd).images.length, 1);
   const tool = ImageView({ toolName: 'novel_generate_image', block: root, cwd });
   assert.equal(tool.children.length, 1);
   const candidate = tool.children.find((child) => typeof child?.type === 'function');
@@ -110,4 +110,32 @@ test('a generated thumbnail uses the stored asset and reports its intrinsic dime
     ImageView({ toolName: 'novel_generate_image', block: { ...root, args: { text: () => 'inspect' } }, cwd }),
     null,
   );
+});
+
+test('turnaround options stay in one review card instead of appearing as ordinary illustrations', () => {
+  const bookId = 'b-' + 'a'.repeat(32);
+  const paths = ['1', '2', '3'].map((n) => 'illustrations/' + n.repeat(64) + '.json');
+  const character = { id: 'c'.repeat(32), name: '陆蘅', revision: 1, chosen: null, candidates: paths };
+  const call = (value) => ({
+    root: {
+      name: 'novel_generate_image',
+      kind: 'tool-result',
+      content: [{ type: 'text', text: JSON.stringify({ bookId, ...value }) }],
+    },
+  });
+  const proposal = call({
+    status: 'character-options',
+    images: paths.map((imagePath) => ({ imagePath })),
+    characterVisual: character,
+  });
+  const waiting = call({ status: 'character-design-needed', characters: [character] });
+  const drawing = call({
+    status: 'ready',
+    images: [{ imagePath: 'illustrations/' + '4'.repeat(64) + '.json' }],
+  });
+  const result = turnImageResults([proposal, waiting, drawing], '/workspace/novels/' + bookId);
+  assert.equal(result.sheets.length, 1);
+  assert.deepEqual(result.sheets[0].candidates, paths);
+  assert.equal(result.images.length, 1);
+  assert.equal(turnImageResults([proposal], '/workspace/novels/other').sheets.length, 0);
 });

@@ -319,6 +319,50 @@ export async function startNovelWeb(
         );
       }
     }
+    const gallery = /^\/api\/novels\/(b-[a-f0-9]{32})\/image-gallery$/.exec(url.pathname)?.[1];
+    const preview = /^\/api\/novels\/(b-[a-f0-9]{32})\/image-preview\/([a-f0-9]{64})$/.exec(url.pathname);
+    if ((gallery || preview) && request.method === 'GET') {
+      const comfy = host.comfy;
+      if (!comfy) return json({ error: '此空间未配置 ComfyUI。' }, 404);
+      try {
+        if (preview) {
+          const [, bookId, digest] = preview;
+          const asset = comfy.characterBook(bookId).run({
+            kind: 'illustrations', action: 'read', imagePath: 'illustrations/' + digest + '.json',
+          });
+          return new Response(Buffer.from(asset.data.split(',')[1], 'base64'), {
+            headers: { 'content-type': 'image/webp', 'cache-control': 'private, no-store',
+              'x-content-type-options': 'nosniff' },
+          });
+        }
+        const service = comfy.characterBook(gallery);
+        const cursor = url.searchParams.get('cursor') ?? undefined;
+        const type = url.searchParams.get('type');
+        if (type === 'other') {
+          const page = service.run({ kind: 'illustrations', cursor });
+          return json({ ...page, images: comfy.unbatched(gallery, page.images) });
+        }
+        const position = cursor === undefined ? Number.MAX_SAFE_INTEGER : Number(cursor);
+        if (!Number.isSafeInteger(position) || position < 1) return json({ error: '图集分页位置无效。' }, 400);
+        service.run({ kind: 'identity' });
+        return json(comfy.gallery(gallery, position, type === 'characters'));
+      } catch (error) {
+        return json({ error: error.status ? error.message : '暂时无法读取图集。' }, error.status ?? 503);
+      }
+    }
+    const imageJob = /^\/api\/novels\/(b-[a-f0-9]{32})\/image-jobs\/([a-f0-9-]{36})$/.exec(url.pathname);
+    if (imageJob && request.method === 'POST') {
+      const [, bookId, id] = imageJob;
+      const comfy = host.comfy;
+      if (!comfy) return json({ error: '此空间未配置 ComfyUI。' }, 404);
+      try {
+        comfy.characterBook(bookId).run({ kind: 'identity' });
+        const result = await comfy.job(bookId, id);
+        return result ? json(result) : json({ error: '找不到本书中的生图任务。' }, 404);
+      } catch (error) {
+        return json({ error: '暂时无法同步插图，稍后继续查询。' }, error.status === 404 ? 404 : 503);
+      }
+    }
     if (url.pathname === '/api/comfy/progress' && request.method === 'GET') {
       const image = url.searchParams.has('image');
       const state = host.comfy?.progress.read(

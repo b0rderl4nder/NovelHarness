@@ -3,6 +3,8 @@ import { illustrationPath } from '../../../worker/shared/illustrations.mjs';
 const bookPattern = /^b-[a-f0-9]{32}$/;
 const identityPattern = /^[a-f0-9]{32}$/;
 const sheetStatuses = new Set(['character-options', 'character-locked', 'character-design-needed']);
+export const characterSheetKey = (character) => character.id + ':' + (character.visualType ?? 'legacy');
+const typeLabel = { realistic: '真人', anime: '动漫', legacy: '旧版' };
 
 export function characterSheets(result, cwd) {
   if (
@@ -72,17 +74,23 @@ export function createCharacterSheetReview(React, GeneratedImage) {
     const [busy, setBusy] = React.useState(false);
     const [retry, setRetry] = React.useState(0);
     const id = character.id;
+    const visualType = character.visualType ?? 'legacy';
+    const identity = characterSheetKey(character);
     React.useEffect(() => {
       let active = true;
       const update = (next) => {
-        if (active && next?.id === id)
+        if (active && next && characterSheetKey(next) === identity)
           setVisual((before) => (!before || next.revision >= before.revision ? next : before));
       };
       const receive = (event) => update(event.detail);
+      const external = (event) => {
+        if (event.detail.bookId === bookId) update(event.detail.character);
+      };
       listeners.addEventListener(bookId, receive);
+      window.addEventListener('novel-character-visual-updated', external);
       read(bookId)
         .then(({ characters }) => {
-          const next = characters.find((item) => item.id === id);
+          const next = characters.find((item) => characterSheetKey(item) === identity);
           if (next) update(next);
           else if (active) setError('这条定妆记录暂不可用。');
         })
@@ -92,8 +100,9 @@ export function createCharacterSheetReview(React, GeneratedImage) {
       return () => {
         active = false;
         listeners.removeEventListener(bookId, receive);
+        window.removeEventListener('novel-character-visual-updated', external);
       };
-    }, [bookId, id, character.revision, retry]);
+    }, [bookId, identity, character.revision, retry]);
 
     const current = visual ?? character;
     const offered = candidates.filter((path) => current.candidates.includes(path));
@@ -109,7 +118,12 @@ export function createCharacterSheetReview(React, GeneratedImage) {
       setBusy(true);
       setError('');
       try {
-        const saved = await visualRequest(bookId, { id, revision: current.revision, imagePath: selected });
+        const saved = await visualRequest(bookId, {
+          id,
+          visualType,
+          revision: current.revision,
+          imagePath: selected,
+        });
         setPicked(null);
         listeners.dispatchEvent(new CustomEvent(bookId, { detail: saved }));
       } catch (reason) {
@@ -125,7 +139,7 @@ export function createCharacterSheetReview(React, GeneratedImage) {
       h(
         'header',
         null,
-        h('strong', null, character.name + ' · 人设图'),
+        h('strong', null, character.name + ' · ' + typeLabel[visualType] + '人设'),
         h('span', { role: 'status' }, current.chosen ? '已定妆' : '待定妆'),
       ),
       selected
@@ -193,7 +207,7 @@ export function createCharacterSheetReview(React, GeneratedImage) {
           'span',
           { className: 'novel-character-sheet-note' },
           current.chosen
-            ? '后续出图会沿用此角色的定妆'
+            ? '后续同类型出图会沿用这张定妆'
             : current.candidates.length < 2
               ? '还需要至少一张不同的候选'
               : '选定后用于后续情节图',

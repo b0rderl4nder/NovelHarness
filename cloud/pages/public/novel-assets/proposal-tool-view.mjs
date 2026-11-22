@@ -3,7 +3,18 @@ import { openTaskProposal } from './proposal-navigation.mjs';
 import { makeDocumentClient } from './manuscript-core.mjs';
 import { openIllustrationLightbox } from './illustration-editor.mjs';
 import { illustrationPath, imageAsset } from '../../../worker/shared/illustrations.mjs';
-import { characterSheets, createCharacterSheetReview } from './character-sheet-review.mjs';
+import { characterSheetKey, characterSheets, createCharacterSheetReview } from './character-sheet-review.mjs';
+
+const activeImageStatuses = ['queued', 'generating', 'retrying'];
+const imageJobMessages = {
+  queued: 'ComfyUI 排队中',
+  generating: 'ComfyUI 生成中',
+  retrying: '暂时无法同步插图，稍后自动重试',
+  failed: 'ComfyUI 执行失败',
+  'no-output': 'ComfyUI 已结束，未返回可保存的图片',
+  unavailable: '当前无法找到原生图任务',
+  unknown: 'ComfyUI 尚未确认收到任务',
+};
 
 // Presentation only, read directly from the ORIGINAL native Tool block and its
 // incremental PartialArguments. No provider stream, copied transcript or draft.
@@ -68,14 +79,25 @@ export function resultImages(result, cwd) {
 export function turnImageResults(calls, cwd) {
   const images = new Map();
   const sheets = new Map();
+  const jobs = new Map();
+  const ready = new Set();
   function visit(block) {
     if (block.name === 'novel_generate_image' && block.kind === 'tool-result' && !block.isError) {
       const { result } = proposalToolModel(block.name, block);
+      if (
+        /^b-[a-f0-9]{32}$/.test(result?.bookId ?? '') &&
+        /^[a-f0-9-]{36}$/.test(result?.jobId ?? '') &&
+        (!cwd || cwd.replace(/\/$/, '') === '/workspace/novels/' + result.bookId)
+      ) {
+        const key = result.bookId + '/' + result.jobId;
+        if (Object.hasOwn(imageJobMessages, result.status)) jobs.set(key, result);
+        else if (result.images?.length) ready.add(key);
+      }
       for (const image of resultImages(result, cwd)) {
         if (!images.has(image.imagePath)) images.set(image.imagePath, image);
       }
       for (const sheet of characterSheets(result, cwd)) {
-        const key = sheet.bookId + ':' + sheet.character.id;
+        const key = sheet.bookId + ':' + characterSheetKey(sheet.character);
         const previous = sheets.get(key);
         if (!previous || result.images?.length || !previous.candidates.length) sheets.set(key, sheet);
       }
@@ -83,7 +105,8 @@ export function turnImageResults(calls, cwd) {
     for (const child of block.subCalls ?? []) visit(child);
   }
   for (const call of calls) if (call.root) visit(call.root);
-  return { images: [...images.values()], sheets: [...sheets.values()] };
+  for (const key of ready) jobs.delete(key);
+  return { images: [...images.values()], sheets: [...sheets.values()], jobs: [...jobs.values()] };
 }
 
 export function installProposalToolViews(ctx, React) {
@@ -133,7 +156,7 @@ export function installProposalToolViews(ctx, React) {
       : h('p', { role: 'status' }, state.error ? '预览加载失败，可在本书图集查看。' : '正在载入插图…');
   }
   const CharacterSheetReview = createCharacterSheetReview(React, GeneratedImage);
-  function DrawingProgress({ book, call, caption }) {
+  function DrawingProgress({ book, call, caption, fallback }) {
     const [state, setState] = React.useState(null);
     const [previewError, setPreviewError] = React.useState(0);
     const url = '/api/comfy/progress?' + new URLSearchParams({ book, call });
@@ -150,7 +173,7 @@ export function installProposalToolViews(ctx, React) {
           if ([401, 403, 404].includes(response.status)) return;
           if (response.ok && !owner.signal.aborted) {
             const next = await response.json();
-            if (next.active && !owner.signal.aborted) setState(next);
+            if (!owner.signal.aborted) setState(next.active ? next : null);
           }
         } catch {
           /* The active tool remains visible while the connection recovers. */
@@ -170,7 +193,7 @@ export function installProposalToolViews(ctx, React) {
         waiting: '等待 ComfyUI 返回成图',
         generating: '正在生成插图',
         saving: '正在存入本书图集',
-      }[state?.stage] ?? '正在准备插图';
+      }[state?.stage] ?? fallback ?? '正在准备插图';
     return h(
       React.Fragment,
       null,
@@ -207,7 +230,7 @@ export function installProposalToolViews(ctx, React) {
     const sheets = characterSheets(result, cwd);
     if (sheets.length)
       return sheets.map((sheet) =>
-        h(CharacterSheetReview, { key: sheet.bookId + ':' + sheet.character.id, ...sheet }),
+        h(CharacterSheetReview, { key: sheet.bookId + ':' + characterSheetKey(sheet.character), ...sheet }),
       );
     const images = resultImages(result, cwd);
     if (images.length)
@@ -233,16 +256,13 @@ export function installProposalToolViews(ctx, React) {
       'character-design-needed': '这个场景需要先定妆',
       'character-reference-unavailable': '当前工作流缺少足够的人物参考图输入',
       'identify-characters': '正在确认画面角色',
+      'identify-visual-type': '正在确认真人或动漫画风',
     }[result?.status];
     const message = failed
       ? '插图生成失败'
-      : result?.status === 'queued'
-        ? 'ComfyUI 正在排队或生成'
-        : result?.status === 'deliver-chapter'
-          ? '先保存本章和已生成的插图'
-          : result?.status === 'unknown'
-            ? '提交结果未确认，请在 ComfyUI 核对队列'
-            : (characterStatus ?? '插图结果暂无法读取');
+      : (imageJobMessages[result?.status] ??
+        (result?.status === 'deliver-chapter' ? '先保存本章和已生成的插图' : characterStatus) ??
+        '插图结果暂无法读取');
     return h(
       'section',
       { className: 'novel-proposal-tool', 'aria-label': 'AI 生图执行详情' },
@@ -250,15 +270,65 @@ export function installProposalToolViews(ctx, React) {
       failed && raw ? h('details', null, h('summary', null, '查看原因'), h('pre', null, raw)) : null,
     );
   }
+  function PendingImageJob({ bookId, jobId, status, progressCallId }) {
+    const [result, setResult] = React.useState(null);
+    React.useEffect(() => {
+      if (!activeImageStatuses.includes(status)) return;
+      const owner = new AbortController();
+      let timer;
+      async function poll() {
+        let next;
+        try {
+          const response = await fetch('/api/novels/' + bookId + '/image-jobs/' + jobId, {
+            method: 'POST',
+            credentials: 'same-origin',
+            signal: AbortSignal.any([owner.signal, AbortSignal.timeout(25_000)]),
+          });
+          if (response.ok) next = await response.json();
+          else if ([401, 403, 404].includes(response.status)) next = { status: 'unavailable' };
+        } catch {
+          // Keep the same receipt while the connection is unavailable.
+        }
+        if (owner.signal.aborted) return;
+        setResult(next ?? { status: 'retrying' });
+        if (!next || activeImageStatuses.includes(next.status))
+          timer = setTimeout(poll, !next || next.status === 'retrying' ? 30_000 : 12_000);
+      }
+      poll();
+      return () => {
+        owner.abort();
+        clearTimeout(timer);
+      };
+    }, [bookId, jobId, status]);
+    const sheets = characterSheets(result, '/workspace/novels/' + bookId);
+    if (sheets.length)
+      return sheets.map((sheet) =>
+        h(CharacterSheetReview, { key: characterSheetKey(sheet.character), ...sheet }),
+      );
+    const images = resultImages(result, '/workspace/novels/' + bookId);
+    const current = result?.status ?? status;
+    return h(
+      'section',
+      { className: 'novel-proposal-tool', 'aria-label': 'AI 插图任务' },
+      images.length
+        ? images.map((image) => h(GeneratedImage, { key: image.imagePath, ...image }))
+        : progressCallId && activeImageStatuses.includes(current)
+          ? h(DrawingProgress, { book: bookId, call: progressCallId, fallback: imageJobMessages[current] })
+          : h('p', { role: 'status' }, imageJobMessages[current]),
+    );
+  }
   function GeneratedImagesTail({ turn, chat }) {
     const source = chat.getSnapshot().nodes.turnDataSource(turn.turn, 'tool-call');
     const calls = React.useSyncExternalStore(source.subscribe, source.getSnapshot);
-    const { images, sheets } = turnImageResults(calls);
+    const { images, sheets, jobs } = turnImageResults(calls);
     return h(
       React.Fragment,
       null,
       ...sheets.map((sheet) =>
-        h(CharacterSheetReview, { key: sheet.bookId + ':' + sheet.character.id, ...sheet }),
+        h(CharacterSheetReview, { key: sheet.bookId + ':' + characterSheetKey(sheet.character), ...sheet }),
+      ),
+      ...jobs.map(({ bookId, jobId, status, progressCallId }) =>
+        h(PendingImageJob, { key: bookId + '/' + jobId, bookId, jobId, status, progressCallId }),
       ),
       images.length
         ? h(

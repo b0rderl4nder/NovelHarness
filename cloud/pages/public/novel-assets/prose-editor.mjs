@@ -10,6 +10,7 @@ import {
 } from './editor-vendor.mjs';
 import { editorText, editorValue, editorRange, editorChange } from './editor-text.mjs';
 import { illustrationExtension, prepareIllustration } from './illustration-editor.mjs';
+import { createIllustrationGallery } from './illustration-gallery.mjs';
 import {
   insertIllustration,
   illustrationMarker,
@@ -18,6 +19,7 @@ import {
 // EditorView is an ephemeral rendering/undo view of the EXISTING manuscript
 // draft. No second persisted body, API, autosave loop or task lifecycle.
 export function createProseEditor(React) {
+  const IllustrationGallery = createIllustrationGallery(React);
   return function ProseEditor({
     value,
     onChange,
@@ -27,6 +29,7 @@ export function createProseEditor(React) {
     label = '书稿正文',
     revealLine = null,
     illustrationApi = null,
+    bookId = null,
     initialPosition = null,
     onPosition,
   }) {
@@ -38,8 +41,7 @@ export function createProseEditor(React) {
       [toolsOpen, setToolsOpen] = React.useState(false),
       [caption, setCaption] = React.useState(''),
       [uploading, setUploading] = React.useState(false),
-      [message, setMessage] = React.useState(''),
-      [album, setAlbum] = React.useState(null);
+      [message, setMessage] = React.useState('');
     const fileInput = React.useRef(null),
       replacement = React.useRef(null),
       mounted = React.useRef(true),
@@ -47,20 +49,6 @@ export function createProseEditor(React) {
       insertionPoint = React.useRef(null),
       uploadingNow = React.useRef(false);
     latest.current = { value, onChange, onSelection, onSave, illustrationApi, hidden, readOnly, onPosition };
-    React.useEffect(() => {
-      if (!toolsOpen || !illustrationApi) return;
-      let alive = true;
-      illustrationApi('illustrations')
-        .then((value) => {
-          if (alive) setAlbum(value);
-        })
-        .catch((error) => {
-          if (alive) setMessage(error.message);
-        });
-      return () => {
-        alive = false;
-      };
-    }, [toolsOpen, illustrationApi]);
     function insertSaved(imagePath, label) {
       const editor = view.current,
         source = latest.current.value;
@@ -301,7 +289,7 @@ export function createProseEditor(React) {
             { className: 'novel-illustration-toolbar' },
             h(
               'button',
-              { type: 'button', 'aria-expanded': toolsOpen, onClick: () => setToolsOpen(!toolsOpen) },
+              { type: 'button', 'aria-haspopup': 'dialog', onClick: () => setToolsOpen(true) },
               '▧ 插图',
             ),
             illustrationEntries(value).length
@@ -319,75 +307,21 @@ export function createProseEditor(React) {
               onChange: upload,
               'aria-label': '上传章节插图',
             }),
-            toolsOpen
-              ? h(
-                  'div',
-                  { className: 'novel-illustration-options' },
-                  h('input', {
-                    value: caption,
-                    maxLength: 160,
-                    'aria-label': '新插图图注',
-                    placeholder: '图注（选填）',
-                    onChange: (e) => setCaption(e.target.value),
-                  }),
-                  h(
-                    'button',
-                    {
-                      type: 'button',
-                      disabled: uploading,
-                      onClick: () => {
-                        replacement.current = null;
-                        fileInput.current?.click();
-                      },
-                    },
-                    uploading ? '上传中…' : '选图插入',
-                  ),
-                  h('small', null, '在光标所在段落后插入；未选位置则在章末。'),
-                  album?.images?.length
-                    ? h(
-                        'div',
-                        {
-                          className: 'novel-illustration-album',
-                          role: 'group',
-                          'aria-label': '本书已有插图',
-                        },
-                        ...album.images.map((image) =>
-                          h(
-                            'button',
-                            {
-                              key: image.imagePath,
-                              type: 'button',
-                              onClick: () => insertSaved(image.imagePath, image.label || ''),
-                            },
-                            image.label || '未命名插图',
-                          ),
-                        ),
-                        album.nextCursor
-                          ? h(
-                              'button',
-                              {
-                                type: 'button',
-                                onClick: async () => {
-                                  try {
-                                    const next = await latest.current.illustrationApi('illustrations', null, {
-                                      cursor: album.nextCursor,
-                                    });
-                                    if (mounted.current)
-                                      setAlbum((previous) => ({
-                                        images: [...previous.images, ...next.images],
-                                        nextCursor: next.nextCursor,
-                                      }));
-                                  } catch (error) {
-                                    if (mounted.current) setMessage(error.message);
-                                  }
-                                },
-                              },
-                              '更多插图',
-                            )
-                          : null,
-                      )
-                    : null,
-                )
+            toolsOpen && bookId
+              ? h(IllustrationGallery, {
+                  key: bookId,
+                  bookId,
+                  api: illustrationApi,
+                  caption,
+                  setCaption,
+                  uploading,
+                  upload: () => {
+                    replacement.current = null;
+                    fileInput.current?.click();
+                  },
+                  insert: insertSaved,
+                  close: () => setToolsOpen(false),
+                })
               : null,
             message ? h('small', { role: 'status' }, message) : null,
           )

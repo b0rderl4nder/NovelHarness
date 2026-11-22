@@ -60,12 +60,19 @@ test('author-locked character sheets are book-scoped and checked on changes', (t
       }
     },
   };
-  const store = createCharacterVisuals(db);
   const person = visualCharacter('陆蘅');
   const alternate = 'illustrations/' + 'c'.repeat(64) + '.json';
+  raw.exec(`CREATE TABLE novel_character_visuals (
+    book TEXT NOT NULL, id TEXT NOT NULL, name TEXT NOT NULL, revision INTEGER NOT NULL,
+    chosen TEXT, candidates TEXT NOT NULL, PRIMARY KEY(book,id)
+  )`);
+  db.run('INSERT INTO novel_character_visuals VALUES (?,?,?,?,?,?)',
+    novelId, person.id, person.name, 9, alternate, JSON.stringify([alternate]));
+  const store = createCharacterVisuals(db);
+  assert.equal(store.get(novelId, person).chosen, alternate);
+  assert.equal(store.get(novelId, person).revision, 9);
   const initial = store.record(novelId, person, [reference]);
   const pick = (value) => ({ id: person.id, revision: value.revision, imagePath: reference });
-  assert.throws(() => store.choose(novelId, pick(initial), () => {}), { status: 409 });
   const candidates = store.record(novelId, person, [alternate]);
   assert.throws(() => store.choose('b-' + 'a'.repeat(31) + 'b', pick(candidates), () => {}), { status: 404 });
   assert.throws(() => store.choose(novelId, pick(initial), () => {}), { status: 409 });
@@ -76,11 +83,22 @@ test('author-locked character sheets are book-scoped and checked on changes', (t
       }),
     /Missing asset/,
   );
-  assert.equal(store.resolve(novelId, ['陆蘅'])[0].chosen, null);
+  assert.equal(store.resolve(novelId, ['陆蘅'])[0].chosen, alternate);
   const locked = store.choose(novelId, pick(candidates), (path) => assert.equal(path, reference));
   assert.equal(store.choose(novelId, pick(candidates), () => {}).revision, locked.revision);
   assert.equal(createCharacterVisuals(db).resolve(novelId, ['　陆蘅　'])[0].chosen, reference);
   assert.equal(store.record(novelId, person, [alternate]).chosen, reference);
+  const anime = visualCharacter('陆蘅', 'anime');
+  const realistic = visualCharacter('陆蘅', 'realistic');
+  assert.equal(anime.id, realistic.id);
+  const animeOptions = store.record(novelId, anime, [reference, alternate]);
+  assert.equal(store.resolve(novelId, ['陆蘅'], 'realistic')[0].candidates.length, 0);
+  const realOptions = store.record(novelId, realistic, [alternate, reference]);
+  assert.equal(realOptions.revision, animeOptions.revision);
+  store.choose(novelId, { ...pick(animeOptions), visualType: 'anime' }, () => {});
+  store.choose(novelId, { ...pick(realOptions), visualType: 'realistic', imagePath: alternate }, () => {});
+  assert.equal(store.resolve(novelId, ['陆蘅'], 'realistic')[0].chosen, alternate);
+  assert.equal(store.resolve(novelId, ['陆蘅'], 'anime')[0].chosen, reference);
 });
 
 test('turnaround sheets use three seeds and scene references require sufficient independent slots', () => {
@@ -213,6 +231,7 @@ test('book-scoped agent can submit, resume after reload, and publish a candidate
     height: 32,
   };
   let ready = false;
+  let running = false;
   const server = createServer(async (req, res) => {
     const url = new URL(req.url, 'http://localhost');
     const send = (value) => res.end(JSON.stringify(value));
@@ -241,6 +260,11 @@ test('book-scoped agent can submit, resume after reload, and publish a candidate
           : {},
       );
     }
+    if (url.pathname === '/queue')
+      return send({
+        queue_running: running ? [[1, 'comfy-receipt']] : [],
+        queue_pending: running ? [] : [[1, 'comfy-receipt']],
+      });
     if (url.pathname === '/view') {
       const version = ['one.webp', 'two.webp', 'three.webp'].indexOf(url.searchParams.get('filename'));
       const sample = Buffer.from(bytes);
@@ -281,14 +305,13 @@ test('book-scoped agent can submit, resume after reload, and publish a candidate
       data: { message: { toolCallId: callId, content: [{ type: 'text', text: JSON.stringify(value) }] } },
     });
   }
-  function tools(book, configPath = config) {
+  function tools(book, configPath = config, backgroundJobs) {
     const definitions = new Map();
     const agent = {
       session: { id: book },
       ctx: { get: () => ({ register: (tool) => definitions.set(tool.name, tool) }) },
     };
-    installComfyTools(
-      {
+    const instance = {
         ctx: { storage: db },
         sessions: {
           context: {
@@ -296,9 +319,12 @@ test('book-scoped agent can submit, resume after reload, and publish a candidate
             get: () => ({ get: () => '/workspace/novels/' + book }),
           },
         },
-      },
+    };
+    installComfyTools(
+      instance,
       {
         installNovelTools,
+        backgroundJobs,
         imageAsset,
         sessionQuery: {
           readSession(session) {
@@ -353,14 +379,18 @@ test('book-scoped agent can submit, resume after reload, and publish a candidate
         }),
       },
       configPath,
-      { waitMs: 0 },
+      { waitMs: 0, backgroundAfterMs: 0, backgroundPollMs: 5 },
     );
-    return async (args, callId = 'native-call') =>
+    const execute = async (args, callId = 'native-call') =>
       JSON.parse(
         await definitions
           .get('novel_generate_image')
           .execute(args, { agent, signal: new AbortController().signal, callId }),
       );
+    execute.job = (id) => instance.comfy.job(book, id);
+    execute.gallery = (type) => instance.comfy.gallery(book, Number.MAX_SAFE_INTEGER, type === 'characters');
+    execute.unbatched = (images) => instance.comfy.unbatched(book, images);
+    return execute;
   }
   const call = tools(novelId);
   const request = {
@@ -373,7 +403,7 @@ test('book-scoped agent can submit, resume after reload, and publish a candidate
   const legacyCall = { ...request };
   delete legacyCall.characters;
   assert.equal((await call(legacyCall, 'no-cast')).status, 'identify-characters');
-  const drawing = { ...request, characters: ['陆蘅'], reference: undefined };
+  const drawing = { ...request, characters: ['陆蘅'], reference: undefined, visual_type: 'anime' };
   assert.equal((await call(drawing, 'before-lock')).status, 'character-design-needed');
   assert.equal(prompts, 0);
   const inspected = await call({ action: 'inspect', reference }, 'inspect');
@@ -383,7 +413,12 @@ test('book-scoped agent can submit, resume after reload, and publish a candidate
   assert.equal((await call(request)).jobId, queued.jobId);
   assert.equal(prompts, 1);
   const status = { action: 'status', job_id: queued.jobId };
-  await assert.rejects(tools('b-' + 'b'.repeat(32))(status), /找不到本书/);
+  const otherBook = tools('b-' + 'b'.repeat(32));
+  await assert.rejects(otherBook(status), /找不到本书/);
+  assert.equal(await otherBook.job(queued.jobId), null);
+  running = true;
+  assert.equal((await call.job(queued.jobId)).status, 'generating');
+  running = false;
   ready = true;
   const completed = await tools(novelId)(status);
   assert.equal(completed.status, 'ready');
@@ -518,9 +553,11 @@ test('book-scoped agent can submit, resume after reload, and publish a candidate
   assert.equal(JSON.parse(layoutGraph['5'].inputs.text).items[0].caption, '左边灯塔');
   assert.equal(JSON.parse(layoutGraph['5'].inputs.text).items[0].bbox[1], -530);
   assert.match(JSON.parse(layoutGraph['5'].inputs.text).summary.caption, /暖灯与海雾/);
-  const sheet = await call(
+  ready = false;
+  const waitingSheet = await call(
     {
       action: 'character_sheet',
+      visual_type: 'anime',
       character: '陆蘅',
       caption: '灯塔',
       prompt: '陆蘅，平刘海，白围巾。',
@@ -528,6 +565,21 @@ test('book-scoped agent can submit, resume after reload, and publish a candidate
     },
     'lu-sheet',
   );
+  assert.equal(waitingSheet.status, 'queued');
+  const promptCountBeforeRecovery = prompts;
+  const uploadsBeforeRecovery = uploads.length;
+  ready = true;
+  // After the original turn and tool instance are gone, a reopened chat can
+  // recover all outputs, without a second render or duplicate gallery writes.
+  const reopened = tools(novelId);
+  const [sheet, sameSheet] = await Promise.all([
+    reopened.job(waitingSheet.jobId),
+    reopened({ action: 'status', job_id: waitingSheet.jobId }, 'sheet-status'),
+  ]);
+  assert.deepEqual(sameSheet, sheet);
+  assert.deepEqual(await reopened.job(waitingSheet.jobId), sheet);
+  assert.equal(prompts, promptCountBeforeRecovery);
+  assert.equal(uploads.length, uploadsBeforeRecovery + 3);
   assert.equal(sheet.status, 'character-options');
   assert.equal(sheet.characterVisual.candidates.length, 3);
   assert.equal(sheet.characterVisual.chosen, null);
@@ -538,7 +590,7 @@ test('book-scoped agent can submit, resume after reload, and publish a candidate
   const chosen = sheet.characterVisual.candidates[0];
   store.choose(
     novelId,
-    { id: sheet.characterVisual.id, revision: sheet.characterVisual.revision, imagePath: chosen },
+    { id: sheet.characterVisual.id, visualType: 'anime', revision: sheet.characterVisual.revision, imagePath: chosen },
     () => {},
   );
   const scene = await profiled({ ...drawing, preset: 'paint', style: '手绘水彩' }, 'locked-reference');
@@ -548,6 +600,62 @@ test('book-scoped agent can submit, resume after reload, and publish a candidate
   assert.equal(rendered.at(-1)['4'].inputs.image, 'fixture/upload.webp');
   assert.match(rendered.at(-1)['5'].inputs.text, /手绘水彩/);
   assert.equal((await call({ action: 'characters' }, 'check-lock')).characters[0].chosen, chosen);
+  const realistic = await call({ ...drawing, visual_type: 'realistic' }, 'realism-after-anime-lock');
+  assert.equal(realistic.status, 'character-design-needed');
+  assert.equal(realistic.characters[0].visualType, 'realistic');
+  assert.deepEqual(realistic.characters[0].candidates, []);
+  const beforeRealistic = referenceUploads.length;
+  const realisticSheet = await call({
+    action: 'character_sheet',
+    character: '陆蘅',
+    visual_type: 'realistic',
+    caption: '灯塔',
+    prompt: '成年女性，白围巾，写实摄影。',
+  }, 'realistic-sheet-after-anime');
+  assert.equal(realisticSheet.status, 'character-options');
+  assert.equal(realisticSheet.characterVisual.id, sheet.characterVisual.id);
+  assert.equal(realisticSheet.characterVisual.candidates.length, 3);
+  assert.equal(referenceUploads.length, beforeRealistic);
+  const realChoice = realisticSheet.characterVisual.candidates[1];
+  store.choose(novelId, {
+    id: realisticSheet.characterVisual.id,
+    visualType: 'realistic',
+    revision: realisticSheet.characterVisual.revision,
+    imagePath: realChoice,
+  }, () => {});
+  const realisticScene = await call({ ...drawing, visual_type: 'realistic' }, 'locked-realistic');
+  assert.deepEqual(realisticScene.characterReferences, [{ name: '陆蘅', imagePath: realChoice }]);
+  assert.equal(store.resolve(novelId, ['陆蘅'], 'anime')[0].chosen, chosen);
+  let handle, backgroundStarts = 0;
+  const native = tools(novelId, config, {
+    start(spec) {
+      assert.equal(spec.owner, novelId);
+      assert.equal(spec.kind, 'comfy');
+      backgroundStarts++;
+      handle = spec.run();
+      return 'comfy-test';
+    },
+  });
+  const beforeBackground = prompts;
+  ready = false;
+  const overdue = { ...request, prompt: '无人码头', reference: undefined };
+  const deferredJob = await native(overdue, 'native-background-test');
+  assert.equal(deferredJob.backgroundJobId, 'comfy-test');
+  assert.equal((await native(overdue, 'native-background-test')).backgroundJobId, 'comfy-test');
+  assert.equal(backgroundStarts, 1);
+  assert.equal(prompts, beforeBackground + 1);
+  ready = true;
+  const outcome = await handle.done;
+  assert.equal(outcome.status, 'completed');
+  assert.deepEqual(JSON.parse(outcome.result).paths, (await native.job(deferredJob.jobId)).images.map(({ imagePath }) => imagePath));
+  const { batches } = native.gallery('generated');
+  assert.equal(batches[0].id, deferredJob.jobId);
+  const characters = native.gallery('characters').batches;
+  assert.equal(characters[0].character.visualType, 'realistic');
+  assert.equal(characters[1].character.visualType, 'anime');
+  assert.equal(characters[0].images.length, 3);
+  assert.deepEqual(otherBook.gallery('generated').batches, []);
+  assert.deepEqual(native.unbatched([...batches[0].images, { imagePath: reference }]), [{ imagePath: reference }]);
 });
 
 test('MOSS regions compile into centered pixel boxes while keeping style, shot and light separate', () => {

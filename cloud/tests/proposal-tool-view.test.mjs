@@ -116,6 +116,7 @@ test('turnaround options stay in one review card instead of appearing as ordinar
   const bookId = 'b-' + 'a'.repeat(32);
   const paths = ['1', '2', '3'].map((n) => 'illustrations/' + n.repeat(64) + '.json');
   const character = { id: 'c'.repeat(32), name: '陆蘅', revision: 1, chosen: null, candidates: paths };
+  const jobId = '12345678-1234-1234-1234-123456789abc';
   const call = (value) => ({
     root: {
       name: 'novel_generate_image',
@@ -124,18 +125,94 @@ test('turnaround options stay in one review card instead of appearing as ordinar
     },
   });
   const proposal = call({
+    jobId,
     status: 'character-options',
     images: paths.map((imagePath) => ({ imagePath })),
     characterVisual: character,
   });
   const waiting = call({ status: 'character-design-needed', characters: [character] });
+  const queued = call({ status: 'queued', jobId });
   const drawing = call({
     status: 'ready',
     images: [{ imagePath: 'illustrations/' + '4'.repeat(64) + '.json' }],
   });
-  const result = turnImageResults([proposal, waiting, drawing], '/workspace/novels/' + bookId);
+  const cwd = '/workspace/novels/' + bookId;
+  assert.equal(turnImageResults([queued, queued], cwd).jobs.length, 1);
+  assert.equal(turnImageResults([queued], '/workspace/novels/other').jobs.length, 0);
+  const result = turnImageResults([queued, proposal, waiting, drawing], cwd);
+  assert.deepEqual(result.jobs, []);
   assert.equal(result.sheets.length, 1);
   assert.deepEqual(result.sheets[0].candidates, paths);
+  const realistic = call({
+    status: 'character-options',
+    characterVisual: { ...character, visualType: 'realistic' },
+  });
+  assert.deepEqual(
+    turnImageResults([proposal, realistic], cwd).sheets.map(({ character }) => character.visualType),
+    [undefined, 'realistic'],
+  );
   assert.equal(result.images.length, 1);
   assert.equal(turnImageResults([proposal], '/workspace/novels/other').sheets.length, 0);
+});
+
+test('the original chat turn resolves a queued receipt into an inline character review', async (t) => {
+  const bookId = 'b-' + 'a'.repeat(32);
+  const jobId = '12345678-1234-1234-1234-123456789abc';
+  const paths = ['1', '2', '3'].map((n) => 'illustrations/' + n.repeat(64) + '.json');
+  const receipt = { status: 'queued', bookId, jobId };
+  const finished = {
+    ...receipt,
+    status: 'character-options',
+    images: paths.map((imagePath) => ({ imagePath })),
+    characterVisual: { id: 'f'.repeat(32), name: '试画角色', candidates: paths, revision: 1, chosen: null },
+  };
+  const call = {
+    root: {
+      name: 'novel_generate_image',
+      kind: 'tool-result',
+      content: [{ type: 'text', text: JSON.stringify(receipt) }],
+    },
+  };
+  let Tail, mount, state, resolveState;
+  const updated = new Promise((done) => (resolveState = done));
+  installProposalToolViews(
+    {
+      effect: (fn) => fn(),
+      slots: {
+        inject: (name, register) => (name === 'tool.call.toolview' ? [...register()] : register()),
+        register: ({ id }, component) => {
+          if (id === 'novel-generated-images') Tail = component;
+        },
+      },
+    },
+    {
+      createElement: (type, props, ...children) => ({ type, props, children }),
+      useState: () => [
+        state,
+        (value) => {
+          state = value;
+          resolveState();
+        },
+      ],
+      useEffect: (fn) => (mount = fn),
+      useSyncExternalStore: (_subscribe, snapshot) => snapshot(),
+    },
+  );
+  const fetch = t.mock.method(globalThis, 'fetch', async () => Response.json(finished));
+  const tail = Tail({
+    turn: { turn: 1 },
+    chat: { getSnapshot: () => ({ nodes: { turnDataSource: () => ({ getSnapshot: () => [call] }) } }) },
+  });
+  const pending = tail.children[0];
+  assert.equal(pending.type(pending.props).children[0].children[0], 'ComfyUI 排队中');
+  const dispose = mount();
+  t.after(dispose);
+  await updated;
+  assert.equal(fetch.mock.callCount(), 1);
+  const [url, options] = fetch.mock.calls[0].arguments;
+  assert.equal(url, '/api/novels/' + bookId + '/image-jobs/' + jobId);
+  assert.equal(options.method, 'POST');
+  const [review] = pending.type(pending.props);
+  assert.equal(review.type.name, 'CharacterSheetReview');
+  assert.deepEqual(review.props.candidates, paths);
 });

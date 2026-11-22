@@ -11,6 +11,7 @@ import { createComfySettings } from './comfy-settings.mjs';
 import { createComfyProgress, watchComfy } from './comfy-progress.mjs';
 import {
   characterSheetLayout,
+  characterVisualTypes,
   createCharacterVisuals,
   identityBindings,
   sheetCanvas,
@@ -21,6 +22,7 @@ import {
 const maxImageBytes = 16 * 1024 * 1024;
 const jobId = /^[0-9a-f-]{36}$/;
 const sha = (text) => createHash('sha256').update(text).digest('hex');
+const preferredVisualPresets = { anime: 'anima', realistic: 'moss-realistic' };
 
 async function boundedImage(response) {
   const chunks = [];
@@ -35,9 +37,9 @@ async function boundedImage(response) {
 
 export function installComfyTools(
   instance,
-  { fs, installNovelTools, makeDocumentService, imageAsset, attachments, sessionQuery },
+  { fs, installNovelTools, makeDocumentService, imageAsset, attachments, sessionQuery, backgroundJobs },
   configPath,
-  { waitMs = 12 * 60 * 1000, pollMs = 4000 } = {},
+  { waitMs = 12 * 60 * 1000, pollMs = 4000, backgroundAfterMs = 8000, backgroundPollMs = 12000 } = {},
 ) {
   const db = instance.ctx.storage;
   db.run(`CREATE TABLE IF NOT EXISTS novel_comfy_jobs (
@@ -55,11 +57,211 @@ export function installComfyTools(
   const settings = createComfySettings(db, configPath);
   const progress = createComfyProgress();
   const characterVisuals = createCharacterVisuals(db);
+  const resolving = new Map();
+  const background = new Map();
+  function jobResult(row, status, extra = {}) {
+    return { ...JSON.parse(row.recipe ?? '{}'), status, bookId: row.book, jobId: row.id, ...extra };
+  }
+  function completed(row, images) {
+    const character = JSON.parse(row.recipe ?? '{}').characterSheet;
+    return character
+      ? jobResult(row, 'character-options', { images, characterVisual: characterVisuals.get(row.book, character) })
+      : jobResult(row, 'ready', { images });
+  }
+  async function resolveJob(row, { signal, update, checkQueue }) {
+    if (row.images) return completed(row, JSON.parse(row.images));
+    if (!row.prompt_id) return jobResult(row, 'unknown');
+    let config = JSON.parse(row.connection ?? 'null');
+    if (!config) {
+      const original = await settings.original();
+      config = [...original.presets.values()].find((preset) => preset.revision === row.revision);
+    }
+    if (!config) return jobResult(row, 'unavailable');
+    const base = new URL(config.base);
+    const comfy = (route, options) => request(base, route, { ...options, signal });
+    const historyPath = 'history/' + encodeURIComponent(row.prompt_id);
+    let history = (await comfy(historyPath))[row.prompt_id];
+    if (!history && checkQueue) {
+      const queue = await comfy('queue');
+      const contains = (items) => items?.some((item) => item?.[1] === row.prompt_id);
+      if (contains(queue.queue_running)) return jobResult(row, 'generating');
+      if (contains(queue.queue_pending)) return jobResult(row, 'queued');
+      // The job may have finished between the history lookup and the queue snapshot.
+      history = (await comfy(historyPath))[row.prompt_id];
+      if (!history) return jobResult(row, 'unavailable');
+    }
+    if (!history) return jobResult(row, 'queued');
+    if (history.status?.status_str === 'error') return jobResult(row, 'failed');
+    const files = Object.values(history.outputs ?? {})
+      .flatMap((node) => node.images ?? [])
+      .filter((file) => file.type === 'output' && /\.(png|jpe?g|webp)$/i.test(file.filename))
+      .slice(0, 4);
+    if (!files.length) return jobResult(row, 'no-output');
+    update?.('saving');
+    const service = makeDocumentService(fs, db, row.book);
+    const scratch = await mkdtemp(join(tmpdir(), 'novel-comfy-image-'));
+    try {
+      const assets = [];
+      for (const file of files) {
+        const response = await comfy('view', {
+          query: { filename: file.filename, subfolder: file.subfolder ?? '', type: 'output' },
+          binary: true,
+        });
+        const source = join(scratch, 'original' + /\.[a-z]+$/i.exec(file.filename)[0].toLowerCase());
+        await writeFile(source, await boundedImage(response));
+        const content = await encodeIllustration(
+          config.ffmpeg,
+          source,
+          scratch,
+          (bytes) => {
+            const [width, height] = webpSize(bytes);
+            return JSON.stringify(
+              imageAsset(
+                JSON.stringify({
+                  format: 'novel-illustration-v1',
+                  width,
+                  height,
+                  label: row.caption,
+                  data: 'data:image/webp;base64,' + bytes.toString('base64'),
+                }),
+              ),
+            );
+          },
+          signal,
+        );
+        assets.push(content);
+      }
+      signal?.throwIfAborted();
+      const images = db.transactionSync(() => {
+        const stored = find(row.book, row.id)?.images;
+        if (stored) return JSON.parse(stored);
+        const published = assets.map((content) => ({
+          imagePath: service.run({ kind: 'illustrations', action: 'upload', content }).imagePath,
+          label: row.caption,
+        }));
+        const unique = [...new Map(published.map((image) => [image.imagePath, image])).values()];
+        const character = JSON.parse(row.recipe ?? '{}').characterSheet;
+        if (character)
+          characterVisuals.record(row.book, character, unique.map(({ imagePath }) => imagePath));
+        db.run('UPDATE novel_comfy_jobs SET images = ? WHERE book = ? AND id = ?', JSON.stringify(unique), row.book, row.id);
+        return unique;
+      });
+      return completed(row, images);
+    } finally {
+      await rm(scratch, { recursive: true, force: true });
+    }
+  }
+  function reconcile(row, options) {
+    if (row.images) return Promise.resolve(completed(row, JSON.parse(row.images)));
+    if (!resolving.has(row.id)) {
+      // The image belongs to the book even if the requesting tab or turn closes.
+      const pending = resolveJob(row, { ...options, signal: AbortSignal.timeout(120_000) })
+        .catch(() => jobResult(row, 'retrying'));
+      resolving.set(row.id, pending);
+      pending.finally(() => resolving.delete(row.id)).catch(() => {});
+    }
+    return resolving.get(row.id);
+  }
+  function trackInBackground(jobs, row, exec, live, watcher) {
+    const current = background.get(row.id);
+    if (current) return current;
+    try {
+      const id = jobs.start({
+        kind: 'comfy',
+        label: '小说插画 · ' + row.id,
+        owner: exec.agent.session.id,
+        ...(exec.rootCallId ? { toolCall: { callId: exec.callId, rootCallId: exec.rootCallId } } : {}),
+        outputLimitBytes: 2000,
+        run() {
+          const owner = new AbortController();
+          const signal = AbortSignal.any([owner.signal, AbortSignal.timeout(6 * 60 * 60 * 1000)]);
+          async function finish() {
+            let missing = 0;
+            while (true) {
+              await delay(backgroundPollMs, undefined, { signal });
+              const result = await reconcile(find(row.book, row.id) ?? row, {
+                checkQueue: true,
+                update: live.update,
+              });
+              signal.throwIfAborted();
+              if (result.status === 'unavailable' && ++missing < 3) continue;
+              if (['queued', 'generating', 'retrying'].includes(result.status)) {
+                missing = 0;
+                continue;
+              }
+              const ready = ['ready', 'character-options'].includes(result.status);
+              return {
+                status: ready ? 'completed' : 'failed',
+                result: JSON.stringify({
+                  status: result.status,
+                  jobId: row.id,
+                  paths: result.images?.map(({ imagePath }) => imagePath),
+                  next: result.status === 'character-options'
+                    ? '候选已在原对话和图集显示；等待作者选择，无需再次生图。'
+                    : ready
+                      ? '图已存入本书，继续本次尚未完成的写作或插画安排。'
+                      : '本次生图未完成；简述状态，继续可独立完成的部分。',
+                }),
+              };
+            }
+          }
+          return {
+            cancel: () => owner.abort(),
+            done: finish()
+              .catch(() => owner.signal.aborted
+                ? { status: 'killed' }
+                : { status: 'failed', detail: '同步等待超过时限' })
+              .finally(() => {
+                background.delete(row.id);
+                watcher?.stop();
+                live.end();
+              }),
+          };
+        },
+      });
+      background.set(row.id, id);
+      return id;
+    } catch {
+      // The job controller may be intentionally absent from this assistant preset.
+      return null;
+    }
+  }
   instance.comfy = {
     settings,
     progress,
     characterVisuals,
     characterBook: (book) => makeDocumentService(fs, db, book),
+    gallery(book, cursor, sheetsOnly) {
+      const limit = 8;
+      const rows = db.all(`SELECT rowid AS position,id,caption,recipe,images FROM novel_comfy_jobs
+        WHERE book=? AND images IS NOT NULL AND rowid < ?
+        ${sheetsOnly ? "AND json_type(recipe, '$.characterSheet') = 'object'" : ''}
+        ORDER BY rowid DESC LIMIT ?`, book, cursor, limit + 1);
+      return {
+        batches: rows.slice(0, limit).map((row) => {
+          const character = JSON.parse(row.recipe ?? '{}').characterSheet;
+          return {
+            id: row.id,
+            caption: row.caption,
+            images: JSON.parse(row.images),
+            ...(character ? { character: characterVisuals.get(book, character) } : {}),
+          };
+        }),
+        nextCursor: rows.length > limit ? rows[limit - 1].position : null,
+      };
+    },
+    unbatched(book, images) {
+      const batched = db.all(`SELECT DISTINCT json_extract(image.value, '$.imagePath') AS path
+        FROM novel_comfy_jobs AS batch, json_each(batch.images) AS image
+        WHERE batch.book=? AND batch.images IS NOT NULL AND json_extract(image.value, '$.imagePath')
+          IN (SELECT value FROM json_each(?))`, book, JSON.stringify(images.map(({ imagePath }) => imagePath)));
+      const paths = new Set(batched.map(({ path }) => path));
+      return images.filter(({ imagePath }) => !paths.has(imagePath));
+    },
+    job(book, id) {
+      const row = jobId.test(id) && find(book, id);
+      return row ? reconcile(row, { checkQueue: true }) : null;
+    },
   };
   return installNovelTools(instance.sessions.context, ({ root, assertScope }) => {
     const book = root.slice('/workspace/novels/'.length);
@@ -67,7 +269,7 @@ export function installComfyTools(
       {
         name: 'novel_generate_image',
         description:
-          '画图、改图和生成候选人设图。generate 的 characters 必须列出画面所有具名人物，空镜或路人用空数组。任何画风下，未定妆角色先用 character_sheet 生成同一角色的三张候选，由作者选择后再画有该角色的情节图。characters 可查询定妆状态（action=characters）。已定妆会自动传入真实参考图，换画风继续用同一角色名；写正文不必等待定妆。presets 查看参数，inspect 看图，queued 用 status 查询。章节首版入书后再按判断重画，revises 填图集路径。',
+          '画图、改图和生成候选人设图。generate 的 characters 列出全部具名角色，空镜或路人用空数组。具名角色和 character_sheet 都需要 visual_type：realistic（真人）或 anime（动漫）。同一个角色可分别拥有两套定妆；只自动使用对应类型的定妆。该类型尚未定妆时，用 character_sheet 先生成三张候选，可直接根据文字生成，由作者选择。characters 查看定妆，presets 查看工作流，inspect 看图。收到 backgroundJobId 后先做独立工作或结束本轮，收到完成通知再用 job_output 取一次结果，无需轮询或重复提交。章节首版入书后再按判断重画，revises 填图集路径。',
         parameters: {
           type: 'object',
           properties: {
@@ -103,6 +305,7 @@ export function installComfyTools(
             caption: { type: 'string', maxLength: 160 },
             revises: { type: 'string', description: '可选，本次重画对应的已有 illustrations/ 路径。' },
             preset: { type: 'string', maxLength: 40 },
+            visual_type: { type: 'string', enum: characterVisualTypes },
             seed: { type: 'integer', minimum: 0, maximum: 4294967295 },
             style: { type: 'string', maxLength: 1000 },
             composition: { type: 'string', maxLength: 1000 },
@@ -210,6 +413,7 @@ export function installComfyTools(
                       ...(sheet ? ['character', 'new_variants'] : ['characters', 'revises']),
                       'reference',
                       'preset',
+                      'visual_type',
                       'seed',
                       'style',
                       'composition',
@@ -229,6 +433,7 @@ export function installComfyTools(
               'character_sheet',
             ].includes(action) ||
             Object.keys(args).some((key) => !keys.includes(key)) ||
+            (args.visual_type !== undefined && !characterVisualTypes.includes(args.visual_type)) ||
             (action === 'inspect' && typeof reference !== 'string') ||
             (args.revises !== undefined && !/^illustrations\/[a-f0-9]{64}\.json$/.test(args.revises)) ||
             (action === 'status'
@@ -267,40 +472,35 @@ export function installComfyTools(
           }
           let row = action === 'status' ? find(book, id) : generation ? findCall(book, exec.callId) : null;
           if (!row && action === 'status') throw new Error('找不到本书中的生图任务。');
-          const result = (status, extra = {}) =>
-            JSON.stringify({
-              status,
-              bookId: book,
-              jobId: row.id,
-              ...(row.recipe ? JSON.parse(row.recipe) : {}),
-              ...extra,
-            });
-          const characterFromRow = () => (row?.recipe ? JSON.parse(row.recipe).characterSheet : undefined);
-          const completed = (images) => {
-            const character = characterFromRow();
-            return character
-              ? result('character-options', {
-                  images,
-                  characterVisual: characterVisuals.get(book, character),
-                })
-              : result('ready', { images });
-          };
-          if (row?.images) return completed(JSON.parse(row.images));
+          const result = (status, extra) => JSON.stringify(jobResult(row, status, extra));
+          if (row?.images) return JSON.stringify(completed(row, JSON.parse(row.images)));
           if (row && !row.prompt_id) return result('unknown');
-          const sheetCharacter = !row && sheet ? visualCharacter(args.character) : null;
+          if (action === 'status') {
+            const current = await reconcile(row, { checkQueue: true });
+            assertScope(exec);
+            return JSON.stringify(current);
+          }
+          const existingBackground = row && background.get(row.id);
+          if (existingBackground)
+            return result('queued', { backgroundJobId: existingBackground, progressCallId: row.call_id });
           const state = (status, extra) => JSON.stringify({ status, bookId: book, ...extra });
+          if (!row && (sheet || (Array.isArray(args.characters) && args.characters.length)) && !args.visual_type)
+            return state('identify-visual-type', {
+              next: '请按画面需求传入 visual_type：realistic（真人）或 anime（动漫）。',
+            });
+          const sheetCharacter = !row && sheet ? visualCharacter(args.character, args.visual_type) : null;
           let cast = [];
           if (!row && action === 'generate') {
             if (args.characters === undefined)
               return state('identify-characters', {
                 next: '重试时传入 characters，列出画面中全部具名角色，无角色时填 []。',
               });
-            cast = characterVisuals.resolve(book, args.characters);
+            cast = characterVisuals.resolve(book, args.characters, args.visual_type);
             const pending = cast.filter(({ chosen }) => !chosen);
             if (pending.length)
               return state('character-design-needed', {
                 characters: pending,
-                next: '为缺少候选的角色生成候选人设图，有候选的等作者定妆。正文可继续交付。',
+                next: '为缺少候选的角色生成同一 visual_type 的候选，有候选的等作者定妆。正文可继续交付。',
               });
           }
           if (sheetCharacter && !args.new_variants) {
@@ -346,7 +546,9 @@ export function installComfyTools(
                 args.preset ??
                   (reference
                     ? (available.defaultReferencePreset ?? available.defaultPreset)
-                    : available.defaultPreset),
+                    : available.presets.has(preferredVisualPresets[args.visual_type])
+                      ? preferredVisualPresets[args.visual_type]
+                      : available.defaultPreset),
               );
           if (!config)
             throw new Error(
@@ -380,8 +582,9 @@ export function installComfyTools(
           }
           const base = new URL(config.base);
           const comfy = (route, options) => request(base, route, { ...options, signal: exec.signal });
+          const jobs = backgroundJobs ?? exec.agent.ctx?.get('jobs');
           const live = progress.begin(book, exec.callId);
-          let watcher;
+          let watcher, handedOff = false;
           try {
             if (!row) {
               const refs = Object.fromEntries(
@@ -489,6 +692,7 @@ export function installComfyTools(
                   ...(cast.length
                     ? { characterReferences: cast.map(({ name, chosen }) => ({ name, imagePath: chosen })) }
                     : {}),
+                  ...(args.visual_type ? { visualType: args.visual_type } : {}),
                   ...(Object.keys(adjustments).length ? { adjustments } : {}),
                 }),
                 JSON.stringify({ base: base.href, ffmpeg: config.ffmpeg }),
@@ -520,81 +724,34 @@ export function installComfyTools(
                 return result('unknown');
               }
             } else live.update('waiting');
-            const deadline = Date.now() + (generation ? waitMs : 0);
-            let history;
-            do {
-              const response = await comfy('history/' + encodeURIComponent(row.prompt_id));
-              history = response[row.prompt_id];
-              if (history || Date.now() >= deadline) break;
+            const startedWaiting = Date.now();
+            const deadline = startedWaiting + (generation ? waitMs : 0);
+            while (true) {
+              const current = await reconcile(row, {
+                update: live.update,
+                checkQueue: Date.now() >= deadline,
+              });
+              assertScope(exec);
+              if (jobs?.start && ['queued', 'generating', 'retrying'].includes(current.status) &&
+                  (current.status === 'retrying' || Date.now() >= startedWaiting + backgroundAfterMs)) {
+                const backgroundJobId = trackInBackground(jobs, row, exec, live, watcher);
+                if (backgroundJobId) {
+                  handedOff = true;
+                  return JSON.stringify({ ...current, backgroundJobId, progressCallId: row.call_id,
+                    next: '等待系统完成通知。继续独立工作或结束本轮，无需查询或重新提交。' });
+                }
+              }
+              if (!['queued', 'generating'].includes(current.status) || Date.now() >= deadline)
+                return JSON.stringify(current);
               await delay(Math.min(pollMs, Math.max(0, deadline - Date.now())), undefined, {
                 signal: exec.signal,
               });
-            } while (true);
-            if (!history) return result('queued');
-            if (history.status?.status_str === 'error')
-              throw new Error('ComfyUI 生图失败，请检查工作流执行记录。');
-            const files = Object.values(history.outputs ?? {})
-              .flatMap((node) => node.images ?? [])
-              .filter((file) => file.type === 'output' && /\.(png|jpe?g|webp)$/i.test(file.filename))
-              .slice(0, 4);
-            if (!files.length) throw new Error('ComfyUI 任务完成，但工作流没有保存可用图片。');
-            live.update('saving');
-            const scratch = await mkdtemp(join(tmpdir(), 'novel-comfy-image-'));
-            try {
-              const assets = [];
-              for (const file of files) {
-                const response = await comfy('view', {
-                  query: { filename: file.filename, subfolder: file.subfolder ?? '', type: 'output' },
-                  binary: true,
-                });
-                const source = join(scratch, 'original' + /\.[a-z]+$/i.exec(file.filename)[0].toLowerCase());
-                await writeFile(source, await boundedImage(response));
-                const content = await encodeIllustration(
-                  config.ffmpeg,
-                  source,
-                  scratch,
-                  (bytes) => {
-                    const [width, height] = webpSize(bytes);
-                    return JSON.stringify(
-                      imageAsset(
-                        JSON.stringify({
-                          format: 'novel-illustration-v1',
-                          width,
-                          height,
-                          label: row.caption,
-                          data: 'data:image/webp;base64,' + bytes.toString('base64'),
-                        }),
-                      ),
-                    );
-                  },
-                  exec.signal,
-                );
-                assets.push(content);
-              }
-              assertScope(exec);
-              const images = db.transactionSync(() => {
-                const published = assets.map((content) => ({
-                  imagePath: service.run({ kind: 'illustrations', action: 'upload', content }).imagePath,
-                  label: row.caption,
-                }));
-                const unique = [...new Map(published.map((image) => [image.imagePath, image])).values()];
-                const character = characterFromRow();
-                if (character)
-                  characterVisuals.record(
-                    book,
-                    character,
-                    unique.map(({ imagePath }) => imagePath),
-                  );
-                db.run('UPDATE novel_comfy_jobs SET images = ? WHERE id = ?', JSON.stringify(unique), row.id);
-                return unique;
-              });
-              return completed(images);
-            } finally {
-              await rm(scratch, { recursive: true, force: true });
             }
           } finally {
-            watcher?.stop();
-            live.end();
+            if (!handedOff) {
+              watcher?.stop();
+              live.end();
+            }
           }
         },
       },

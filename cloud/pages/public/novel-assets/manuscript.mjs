@@ -2510,6 +2510,7 @@ export function installManuscript(ctx, React, { navigation: appNavigation, creat
                                             illustrationApi: document.path.startsWith('chapters/')
                                               ? api
                                               : null,
+                                            bookId: id,
                                             readOnly: !!(candidate && !candidate.editable),
                                             onChange: edit,
                                             onSelection: (next) =>

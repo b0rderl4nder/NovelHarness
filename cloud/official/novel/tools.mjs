@@ -56,6 +56,7 @@ export async function apply(ctx, config) {
         imageAsset,
         sessionQuery: ctx.get('sessionQuery'),
         attachments: ctx.get('attachments'),
+        backgroundJobs: ctx.get('jobs'),
       },
       config.comfyConfig,
     );

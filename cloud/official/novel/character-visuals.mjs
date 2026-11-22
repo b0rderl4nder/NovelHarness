@@ -6,12 +6,15 @@ import { referenceCanvas } from './comfy-presets.mjs';
 const invalid = (status, message) => Object.assign(new Error(message), { status });
 const maxCast = 4;
 const maxSheets = 12;
+export const characterVisualTypes = ['realistic', 'anime'];
+const validType = (type) => type === 'legacy' || characterVisualTypes.includes(type);
 
-export function visualCharacter(value) {
+export function visualCharacter(value, visualType = 'legacy') {
   const name = typeof value === 'string' ? value.normalize('NFKC').trim().replace(/\s+/g, ' ') : '';
   if (!name || name.length > 80 || /[\p{C}]/u.test(name)) throw invalid(400, '请使用书内角色的姓名。');
   const id = createHash('sha256').update(name.toLowerCase()).digest('hex').slice(0, 32);
-  return { id, name };
+  if (!validType(visualType)) throw invalid(400, '未知的人设画风。');
+  return { id, name, visualType };
 }
 
 export function createCharacterVisuals(db) {
@@ -19,11 +22,23 @@ export function createCharacterVisuals(db) {
     book TEXT NOT NULL, id TEXT NOT NULL, name TEXT NOT NULL, revision INTEGER NOT NULL,
     chosen TEXT, candidates TEXT NOT NULL, PRIMARY KEY(book,id)
   )`);
-  const rows = (book) => db.all('SELECT * FROM novel_character_visuals WHERE book=? ORDER BY name,id', book);
-  const find = (book, id) => db.one('SELECT * FROM novel_character_visuals WHERE book=? AND id=?', book, id);
-  const shape = ({ id, name, revision, chosen, candidates }) => ({
+  db.run(`CREATE TABLE IF NOT EXISTS novel_character_visual_variants (
+    book TEXT NOT NULL, id TEXT NOT NULL, visual_type TEXT NOT NULL CHECK(visual_type IN ('realistic','anime')),
+    name TEXT NOT NULL, revision INTEGER NOT NULL,
+    chosen TEXT, candidates TEXT NOT NULL, PRIMARY KEY(book,id,visual_type)
+  )`);
+  const rows = (book) =>
+    db.all(`SELECT id,name,revision,chosen,candidates,'legacy' AS visual_type FROM novel_character_visuals WHERE book=?
+      UNION ALL SELECT id,name,revision,chosen,candidates,visual_type FROM novel_character_visual_variants WHERE book=?
+      ORDER BY name,id,visual_type`, book, book);
+  const find = (book, id, type) =>
+    type === 'legacy'
+      ? db.one('SELECT * FROM novel_character_visuals WHERE book=? AND id=?', book, id)
+      : db.one('SELECT * FROM novel_character_visual_variants WHERE book=? AND id=? AND visual_type=?', book, id, type);
+  const shape = ({ id, name, visual_type = 'legacy', revision, chosen, candidates }) => ({
     id,
     name,
+    visualType: visual_type,
     revision,
     chosen,
     candidates: JSON.parse(candidates),
@@ -31,13 +46,14 @@ export function createCharacterVisuals(db) {
   return {
     list: (book) => rows(book).map(shape),
     get(book, character) {
-      const row = find(book, character.id);
-      return row ? shape(row) : { ...character, revision: 0, chosen: null, candidates: [] };
+      const visualType = character.visualType ?? 'legacy';
+      const row = find(book, character.id, visualType);
+      return row ? shape(row) : { ...character, visualType, revision: 0, chosen: null, candidates: [] };
     },
-    resolve(book, names) {
+    resolve(book, names, visualType) {
       if (!Array.isArray(names) || names.length > maxCast)
         throw invalid(400, '请列出画面中的具名角色，每张图最多四位。');
-      const identities = names.map(visualCharacter);
+      const identities = names.map((name) => visualCharacter(name, visualType));
       if (new Set(identities.map(({ id }) => id)).size !== names.length)
         throw invalid(400, '画面角色名单有重复。');
       return identities.map((character) => this.get(book, character));
@@ -45,32 +61,37 @@ export function createCharacterVisuals(db) {
     record(book, character, paths) {
       if (!paths.every(illustrationPath)) throw invalid(400, '人物候选图路径无效。');
       return db.transactionSync(() => {
-        const { name, chosen, candidates, revision } = this.get(book, character);
+        const { name, chosen, candidates, revision, visualType } = this.get(book, character);
         const next = [...new Set([...paths, ...candidates])]
           .filter((path) => path !== chosen)
           .slice(0, maxSheets - Number(!!chosen));
         if (chosen) next.unshift(chosen);
-        db.run(
-          `INSERT INTO novel_character_visuals(book,id,name,revision,candidates) VALUES (?,?,?,?,?)
-          ON CONFLICT(book,id) DO UPDATE SET revision=excluded.revision,candidates=excluded.candidates`,
-          book,
-          character.id,
-          name,
-          revision + 1,
-          JSON.stringify(next),
-        );
+        if (visualType === 'legacy')
+          db.run(
+            `INSERT INTO novel_character_visuals(book,id,name,revision,candidates) VALUES (?,?,?,?,?)
+            ON CONFLICT(book,id) DO UPDATE SET revision=excluded.revision,candidates=excluded.candidates`,
+            book, character.id, name, revision + 1, JSON.stringify(next),
+          );
+        else
+          db.run(
+            `INSERT INTO novel_character_visual_variants(book,id,visual_type,name,revision,candidates) VALUES (?,?,?,?,?,?)
+            ON CONFLICT(book,id,visual_type) DO UPDATE SET revision=excluded.revision,candidates=excluded.candidates`,
+            book, character.id, visualType, name, revision + 1, JSON.stringify(next),
+          );
         return this.get(book, character);
       });
     },
     choose(book, input, checkImage) {
+      const visualType = input?.visualType ?? 'legacy';
       if (
         !/^[a-f0-9]{32}$/.test(input?.id ?? '') ||
+        !validType(visualType) ||
         !Number.isSafeInteger(input.revision) ||
         !illustrationPath(input.imagePath)
       )
         throw invalid(400, '定妆选择无效。');
       return db.transactionSync(() => {
-        const row = find(book, input.id);
+        const row = find(book, input.id, visualType);
         if (!row || !JSON.parse(row.candidates).includes(input.imagePath))
           throw invalid(404, '本书角色的候选图不存在。');
         if (row.chosen === input.imagePath) return shape(row);
@@ -78,13 +99,17 @@ export function createCharacterVisuals(db) {
         if (!row.chosen && JSON.parse(row.candidates).length < 2)
           throw invalid(409, '至少有两张不同的候选后才能定妆。');
         checkImage(input.imagePath);
-        db.run(
-          'UPDATE novel_character_visuals SET chosen=?,revision=revision+1 WHERE book=? AND id=?',
-          input.imagePath,
-          book,
-          input.id,
-        );
-        return shape(find(book, input.id));
+        if (visualType === 'legacy')
+          db.run(
+            'UPDATE novel_character_visuals SET chosen=?,revision=revision+1 WHERE book=? AND id=?',
+            input.imagePath, book, input.id,
+          );
+        else
+          db.run(
+            'UPDATE novel_character_visual_variants SET chosen=?,revision=revision+1 WHERE book=? AND id=? AND visual_type=?',
+            input.imagePath, book, input.id, visualType,
+          );
+        return shape(find(book, input.id, visualType));
       });
     },
   };

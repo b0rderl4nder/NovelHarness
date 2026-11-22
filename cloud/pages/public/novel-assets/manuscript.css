@@ -1597,6 +1597,11 @@ fieldset.novel-canon-detail {
   margin-top: 4px;
   color: var(--dsw-alias-label-secondary);
 }
+.novel-proposal-tool progress {
+  display: block;
+  width: min(100%, 16rem);
+  accent-color: var(--dsw-alias-state-business-primary);
+}
 .novel-import-filters {
   display: flex;
   gap: 10px;

@@ -289,6 +289,53 @@ export async function startNovelWeb(
       return url.pathname === '/'
         ? new Response(null, { status: 302, headers: { location: '/login', 'cache-control': 'no-store' } })
         : json({ error: '请先登录。' }, 401);
+    if (url.pathname === '/api/comfy/progress' && request.method === 'GET') {
+      const image = url.searchParams.has('image');
+      const state = host.comfy?.progress.read(
+        url.searchParams.get('book'),
+        url.searchParams.get('call'),
+        image,
+      );
+      if (!state) return json({ active: false }, image ? 404 : 200);
+      if (!image) return json({ active: true, ...state });
+      return new Response(state.bytes, {
+        headers: {
+          'content-type': state.type,
+          'cache-control': 'no-store',
+          'x-content-type-options': 'nosniff',
+        },
+      });
+    }
+    if (url.pathname === '/api/comfy/settings' || url.pathname === '/api/comfy/check') {
+      const isSettings = url.pathname.endsWith('/settings');
+      const method = request.method;
+      const settings = host.comfy?.settings;
+      if (isSettings && method === 'GET' && !settings) return json({ supported: false });
+      if (!settings) return json({ error: '此空间未配置 ComfyUI。' }, 404);
+      try {
+        if (isSettings && method === 'GET') return json(await settings.read());
+        if ((isSettings && method === 'PUT') || (!isSettings && method === 'POST')) {
+          if (!request.headers.get('content-type')?.startsWith('application/json'))
+            return json({ error: '请使用 JSON 提交生图设置。' }, 415);
+          const body = await boundedBody(request, 24000);
+          let input;
+          try {
+            input = JSON.parse(body.toString('utf8'));
+          } catch {
+            return json({ error: '生图设置格式不正确。' }, 400);
+          }
+          return json(
+            isSettings ? await settings.save(input) : await settings.check(input?.comfy, request.signal),
+          );
+        }
+        return json({ error: '不支持此请求方式。' }, 405);
+      } catch (error) {
+        return json(
+          { error: error.status ? error.message : '无法读取或校验生图设置，请检查主机工作流。' },
+          error.status ?? 503,
+        );
+      }
+    }
     if (
       anonymous &&
       /^\/dsh-purge\/(skills?|rules|update|apply|revert|uninstall|restart|drill-grant)(\/|$)/.test(

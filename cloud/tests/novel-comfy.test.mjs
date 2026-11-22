@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { once } from 'node:events';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
+import { setTimeout as delay } from 'node:timers/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -13,6 +14,9 @@ import { illustrationEntries, imageAsset } from '../worker/shared/illustrations.
 import { installComfyTools } from '../official/novel/comfy-tools.mjs';
 import { installNovelTools } from '../worker/novel-tools.mjs';
 import { compileVisualPrompt, loadComfyPresets, referenceCanvas } from '../official/novel/comfy-presets.mjs';
+import { createComfySettings } from '../official/novel/comfy-settings.mjs';
+import { createComfyProgress, watchComfy } from '../official/novel/comfy-progress.mjs';
+import { WebSocketServer } from '../tools/node_modules/ws/wrapper.mjs';
 
 const sha = (text) => createHash('sha256').update(text).digest('hex');
 const bytes = Buffer.from('UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEADsD+JaQAA3AAAAAA', 'base64');
@@ -30,6 +34,77 @@ const bindings = {
 const novelId = 'b-' + 'a'.repeat(32);
 const chapter = 'chapters/1.md';
 const reference = 'illustrations/' + 'b'.repeat(64) + '.json';
+
+test('ComfyUI settings validate host endpoints, numeric controls and concurrent saves', async (t) => {
+  const raw = new DatabaseSync(':memory:');
+  t.after(() => raw.close());
+  const db = {
+    run: (sql, ...args) => raw.prepare(sql).run(...args),
+    one: (sql, ...args) => raw.prepare(sql).get(...args),
+  };
+  const dir = await mkdtemp(join(tmpdir(), 'novel-comfy-settings-test-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const file = join(dir, 'config.json');
+  await writeFile(join(dir, 'workflow.json'), JSON.stringify(template));
+  await writeFile(
+    file,
+    JSON.stringify({
+      comfy: 'http://127.0.0.1:8188',
+      allowedComfyEndpoints: ['http://127.0.0.1:8288'],
+      workflow: 'workflow.json',
+      bindings: { prompt: bindings.script, width: [['6', 'width']] },
+      controls: { width: { min: 512, max: 1600, step: 16 } },
+    }),
+  );
+  const settings = createComfySettings(db, file);
+  const initial = await settings.read();
+  const input = { ...initial, comfy: initial.endpoints[1], values: { default: { width: 1152 } } };
+  await assert.rejects(settings.save({ ...input, comfy: 'http://127.0.0.1:80' }), /主机已登记/);
+  await assert.rejects(settings.save({ ...input, values: { default: { width: 1153 } } }), /超出/);
+  const saved = await settings.save(input);
+  assert.equal(saved.presets[0].controls.width.default, 1152);
+  assert.equal(saved.comfy, 'http://127.0.0.1:8288/');
+  await assert.rejects(settings.save(input), { status: 409 });
+  assert.deepEqual(await createComfySettings(db, file).read(), saved);
+});
+
+test('ComfyUI forwards the matching sampler progress and short-lived preview', async (t) => {
+  const server = createServer();
+  const sockets = new WebSocketServer({ server });
+  t.after(() => {
+    for (const socket of sockets.clients) socket.terminate();
+    sockets.close();
+    server.close();
+  });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const pending = once(sockets, 'connection');
+  const progress = createComfyProgress();
+  const live = progress.begin(novelId, 'test-call');
+  const watcher = await watchComfy(
+    new URL(`http://127.0.0.1:${server.address().port}/`),
+    live,
+    new AbortController().signal,
+  );
+  const [socket, request] = await pending;
+  assert.match(request.url, new RegExp('clientId=' + watcher.clientId));
+  watcher.track('my-prompt');
+  for (const [value, prompt_id] of [
+    [99, 'other-prompt'],
+    [7, 'my-prompt'],
+  ])
+    socket.send(JSON.stringify({ type: 'progress', data: { value, max: 32, prompt_id } }));
+  socket.send(Buffer.from([0, 0, 0, 1, 0, 0, 0, 1, 255, 216, 255, 217]));
+  for (let attempt = 0; attempt < 30 && !progress.read(novelId, 'test-call').previewId; attempt++)
+    await delay(20);
+  const snapshot = progress.read(novelId, 'test-call');
+  assert.deepEqual(snapshot, { stage: 'generating', value: 7, max: 32, previewId: 1 });
+  assert.equal(progress.read(novelId, 'test-call', true).type, 'image/jpeg');
+  assert.equal(progress.read('b-' + 'b'.repeat(32), 'test-call'), null);
+  watcher.stop();
+  live.end();
+  assert.equal(progress.read(novelId, 'test-call', true), null);
+});
 
 test('book-scoped agent can submit, resume after reload, and publish a candidate without editing prose', async (t) => {
   const raw = new DatabaseSync(':memory:');

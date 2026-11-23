@@ -45,7 +45,7 @@
 - MOSS 版式预设设置 `layout: [宽, 高]`，与实际工作流尺寸一致。`regions` 用 `[左, 上, 右, 下]` 的 0–1000 相对坐标标注人、物和文字。文字框另给逐字文本。服务会换算为 MOSS 的中心像素坐标。
 - `reference` 可填 `chat:latest`、`references` 返回的当前对话图片 ID，或本书图集路径。它提供一张单独的场景参考图，需要有对应输入的 ComfyUI 工作流。助手理解画面还需要当前 DSH 模型支持视觉输入，可用 `inspect` 查看图集图片并分析成图。
 - `character_sheet` 为一个角色生成三张候选，每张包含面部近照及正、侧、背全身图。作者确认后，`generate` 按 `characters` 和 `visual_type` 读取对应定妆。作者要求探索新一批样式时可设 `new_variants`，当前定妆会保留到作者再次选择。
-- 可用 `inspect` 看已选定妆图，再用 `character_reference_views` 保存正面全身和近景两个单人范围。`generate` 传 `shot: "full_body"` 或 `"close_up"` 后，工具通过 ComfyUI 的 `ImageCrop` 从已选图裁出对应范围。省略 `shot` 时使用整张定妆图。单人范围按本书、角色、画风、所选图片保存，改选之后读取新图自己的范围。
+- 用 `inspect` 查看已选定妆图和它的路径。助手可在 `generate` 的 `character_crops` 内传入角色、当前定妆图路径和千分比单人框，由 ComfyUI 的 `ImageCrop` 裁切。这次使用的框不写入定妆档案。需要以后复用时，用 `character_reference_views` 保存正面全身或近景范围。省略 `shot` 时优先使用已保存的全身，其次近景，没有范围时使用原图。也可明确指定 `full_body`、`close_up` 或 `whole`。
 - 单角色可沿用图生图工作流的 `reference`。多角色工作流可按作者提供的出场顺序绑定 `characterReference1` 到 `characterReference4`，可用相应的 `useCharacterReference1` 等开关。当前图生图预设未提供足够独立输入时，助手会收到需要兼容工作流的状态。
 - 固定 `seed` 可在相同工作流和输入下复查。查询结果会带实际预设和种子。暂未完成的任务需要原预设才能继续取图。
 

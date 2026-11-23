@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Writable } from 'node:stream';
-import { gunzipSync } from 'node:zlib';
+import { brotliDecompressSync, gunzipSync } from 'node:zlib';
 import {
-  compressibleAsset,
+  assetEncoding,
   assetDeliveryHeaders,
   streamBrowserBody,
   novelModulePreloads,
@@ -21,8 +21,8 @@ test('large immutable native modules are streamed compressed without changing th
   const response = new Response(text, {
     headers: { ...headers, 'content-length': String(Buffer.byteLength(text)), vary: 'Origin' },
   });
-  assert(compressibleAsset(request('/plugins/?combo=revision'), response));
-  const delivery = assetDeliveryHeaders(response.headers, true);
+  assert.equal(assetEncoding(request('/plugins/?combo=revision'), response), 'br');
+  const delivery = assetDeliveryHeaders(response.headers, 'gzip');
   assert.equal(delivery.get('content-encoding'), 'gzip');
   assert.equal(delivery.get('content-length'), null);
   assert.equal(delivery.get('vary'), 'Origin, Accept-Encoding');
@@ -35,11 +35,18 @@ test('large immutable native modules are streamed compressed without changing th
         done();
       },
     }),
-    true,
+    'gzip',
   );
   const encoded = Buffer.concat(chunks);
   assert.equal(gunzipSync(encoded).toString('utf8'), text);
   assert(encoded.length < Buffer.byteLength(text) / 10);
+  chunks.length = 0;
+  await streamBrowserBody(
+    new Response(text, { headers }),
+    new Writable({ write(chunk, encoding, done) { chunks.push(chunk); done(); } }),
+    'br',
+  );
+  assert.equal(brotliDecompressSync(Buffer.concat(chunks)).toString('utf8'), text);
 });
 test('compression excludes live streams, private files, disabled encodings and already encoded responses', () => {
   for (const path of [
@@ -49,35 +56,47 @@ test('compression excludes live streams, private files, disabled encodings and a
     '/plugins/events',
   ])
     assert.equal(
-      compressibleAsset(
+      assetEncoding(
         request(path),
         new Response('event', { headers: { 'content-type': 'text/event-stream' } }),
       ),
-      false,
+      null,
     );
   for (const encoding of ['gzip;q=0, br', 'gzip;q=0, *;q=1', 'identity', 'gzip;q=no'])
-    assert.equal(compressibleAsset(request('/plugins/', encoding), new Response('code', { headers })), false);
+    assert.equal(assetEncoding(request('/plugins/', encoding), new Response('code', { headers })), encoding.includes('br') ? 'br' : null);
   for (const extra of [
     { 'content-encoding': 'br' },
     { 'cache-control': 'private' },
     { 'cache-control': 'public, no-transform' },
   ])
     assert.equal(
-      compressibleAsset(request('/plugins/'), new Response('code', { headers: { ...headers, ...extra } })),
-      false,
+      assetEncoding(request('/plugins/'), new Response('code', { headers: { ...headers, ...extra } })),
+      null,
     );
   assert(
-    compressibleAsset(request('/studio/revision/runtime.mjs', '*;q=1'), new Response('code', { headers })),
+    assetEncoding(request('/studio/revision/runtime.mjs', '*;q=1'), new Response('code', { headers })),
   );
   assert.equal(
-    compressibleAsset(request('/plugins/', 'gzip', 'HEAD'), new Response('code', { headers })),
-    false,
+    assetEncoding(request('/plugins/', 'gzip', 'HEAD'), new Response('code', { headers })),
+    null,
   );
+});
+test('version-addressed private code can compress while private API data stays untouched', () => {
+  const revision = 'official-novel-' + '1'.repeat(16);
+  const response = new Response('module', {
+    headers: { ...headers, 'cache-control': 'private, max-age=31536000, immutable' },
+  });
+  assert.equal(assetEncoding(request('/studio/' + revision + '/editor.mjs'), response), 'br');
+  const native = '/plugins/@deepseek-ai/dsh-client-ui-conversation/client.js';
+  assert.equal(assetEncoding(request(native + '?novel=' + revision, 'gzip, br;q=0.5'), response), 'gzip');
+  for (const path of [native, '/api/novels/book/documents', '/studio/development/editor.mjs'])
+    assert.equal(assetEncoding(request(path), response), null);
 });
 test('native shell preloads the same versioned novel entries before plugin activation', () => {
   const html = novelModulePreloads('/studio/current/pages/public/novel-assets/');
-  assert.equal((html.match(/rel="modulepreload"/g) ?? []).length, 7);
+  assert.equal((html.match(/rel="modulepreload"/g) ?? []).length, 8);
   assert(html.includes('/studio/current/pages/public/novel-assets/manuscript.mjs'));
+  assert(html.includes('/studio/current/pages/public/novel-assets/editor-vendor.mjs'));
 });
 test('a normal recovery login preserves other devices; PIN epoch changes still disconnect stale carriers', () => {
   const base = {

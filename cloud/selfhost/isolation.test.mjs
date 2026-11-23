@@ -70,6 +70,12 @@ try {
   });
   assert([404, 409].includes(privateImage.status), 'B can read A illustration: ' + privateImage.status);
   await privateImage.arrayBuffer();
+  const preview = await fetch(
+    app.origin + path + '/image-preview/' + uploaded.imagePath.slice('illustrations/'.length, -5),
+    { headers: { origin: app.origin, cookie: [...jars[1]].map(([k, v]) => k + '=' + v).join('; ') } },
+  );
+  assert([404, 409].includes(preview.status), 'B can read A preview: ' + preview.status);
+  await preview.arrayBuffer();
   assert.equal((await call(0, '/api/auth/pin')).mode, 'anonymous');
   await rpc(0, 'credentials/set', { ref: 'DEEPSEEK_API_KEY', value: 'fixture-only-no-model-requests' });
   assert.equal(

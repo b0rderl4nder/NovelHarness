@@ -1597,6 +1597,10 @@ fieldset.novel-canon-detail {
   margin-top: 4px;
   color: var(--dsw-alias-label-secondary);
 }
+.novel-generated-image .novel-generated-image-pending img {
+  width: 160px;
+  height: 100px;
+}
 .novel-character-sheet {
   display: grid;
   gap: 10px;

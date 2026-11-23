@@ -1,8 +1,7 @@
 import { createProseEditor } from './prose-editor.mjs';
 import { openTaskProposal } from './proposal-navigation.mjs';
-import { makeDocumentClient } from './manuscript-core.mjs';
 import { openIllustrationLightbox } from './illustration-editor.mjs';
-import { illustrationPath, imageAsset } from '../../../worker/shared/illustrations.mjs';
+import { illustrationPath } from '../../../worker/shared/illustrations.mjs';
 import { characterSheetKey, characterSheets, createCharacterSheetReview } from './character-sheet-review.mjs';
 
 const activeImageStatuses = ['queued', 'generating', 'retrying'];
@@ -116,44 +115,39 @@ export function installProposalToolViews(ctx, React) {
     const [state, setState] = React.useState({});
     const dialog = React.useRef(null);
     const caption = label || 'AI 插图';
-    React.useEffect(() => {
-      let active = true;
-      makeDocumentClient(bookId)('illustrations', null, { action: 'read', imagePath })
-        .then((value) => {
-          if (active) setState({ asset: imageAsset(JSON.stringify(value)) });
-        })
-        .catch(() => {
-          if (active) setState({ error: true });
-        });
-      return () => {
-        active = false;
-        dialog.current?.remove();
-      };
-    }, [bookId, imagePath]);
-    return state.asset
-      ? h(
-          'figure',
-          { className: 'novel-generated-image' + (wide ? ' novel-generated-image-wide' : '') },
-          h(
-            'button',
-            {
-              type: 'button',
-              className: 'novel-generated-image-trigger',
-              'aria-label': '放大插图：' + caption,
-              onClick: (event) => {
-                dialog.current = openIllustrationLightbox(state.asset.data, caption, event.currentTarget);
-              },
-            },
-            h('img', {
-              src: state.asset.data,
-              alt: caption,
-              width: state.asset.width,
-              height: state.asset.height,
-            }),
-          ),
-          h('figcaption', null, caption + ' · ' + state.asset.width + ' × ' + state.asset.height),
-        )
-      : h('p', { role: 'status' }, state.error ? '预览加载失败，可在本书图集查看。' : '正在载入插图…');
+    const src = '/api/novels/' + bookId + '/image-preview/' + imagePath.slice('illustrations/'.length, -5);
+    const dimensions = state.src === src ? state : {};
+    React.useEffect(() => () => dialog.current?.remove(), [src]);
+    if (dimensions.error) return h('p', { role: 'status' }, '预览加载失败，可在本书图集查看。');
+    return h(
+      'figure',
+      { className: 'novel-generated-image' + (wide ? ' novel-generated-image-wide' : '') },
+      h(
+        'button',
+        {
+          type: 'button',
+          className: 'novel-generated-image-trigger' + (dimensions.width ? '' : ' novel-generated-image-pending'),
+          'aria-label': '放大插图：' + caption,
+          disabled: !dimensions.width,
+          onClick: (event) => {
+            dialog.current = openIllustrationLightbox(src, caption, event.currentTarget);
+          },
+        },
+        h('img', {
+          key: src,
+          src,
+          alt: caption,
+          loading: 'lazy',
+          decoding: 'async',
+          width: dimensions.width,
+          height: dimensions.height,
+          onLoad: ({ currentTarget }) =>
+            setState({ src, width: currentTarget.naturalWidth, height: currentTarget.naturalHeight }),
+          onError: () => setState({ src, error: true }),
+        }),
+      ),
+      h('figcaption', null, caption + (dimensions.width ? ' · ' + dimensions.width + ' × ' + dimensions.height : '')),
+    );
   }
   const CharacterSheetReview = createCharacterSheetReview(React, GeneratedImage);
   function DrawingProgress({ book, call, caption, fallback }) {

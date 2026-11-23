@@ -58,6 +58,13 @@ export async function verifyIllustrationUi({ page, context, origin, book, editor
   const inserted = await readEditor(editor);
   assert(inserted.includes('![雨港插图](illustrations/'));
   assert.equal(inserted.replace(/\n\n!\[雨港插图\]\(illustrations\/[a-f0-9]{64}\.json\)/, ''), prose);
+  const digest = /illustrations\/([a-f0-9]{64})\.json/.exec(inserted)[1];
+  const preview = await context.request.get(origin + '/api/novels/' + book.id + '/image-preview/' + digest);
+  assert.equal(preview.status(), 200);
+  assert.equal(preview.headers()['content-type'], 'image/webp');
+  assert.equal(preview.headers()['cache-control'], 'private, no-store');
+  assert.equal((await preview.body()).toString('ascii', 8, 12), 'WEBP');
+  await preview.dispose();
   for (const width of [1280, 390, 320]) {
     await page.setViewportSize({ width, height: 900 });
     await waitResponsiveLayout(page);

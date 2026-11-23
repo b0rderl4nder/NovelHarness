@@ -279,7 +279,7 @@ export function installComfyTools(
       {
         name: 'novel_generate_image',
         description:
-          '画图、改图和生成候选人设图。使用定妆时直接调用 generate，填全部具名角色的 characters 和 visual_type，工具会自动送入每位角色已选的定妆图。空镜或路人填 []。realistic（真人）和 anime（动漫）独立定妆。characters 查看定妆记录，presets 查看工作流。只有要核对外观或标记裁切时才用 inspect，填当前 chosen 路径，或填一位角色的 character 和 visual_type。无需自行解码、导出或逐张读取候选。shot 只在需要单人裁切时填；没有对应裁切且作者只要求复用定妆时，省略 shot 即可使用完整定妆图。要保存裁切，可用 character_reference_views。缺少定妆时用 character_sheet 生成三张候选供作者选择。已排队或生成中时继续独立工作或结束本轮，等待通知后用 job_output 取结果，无需轮询或重新提交。章节首版入书后再重画，revises 填图集路径。',
+          '画图、改图和生成候选人设图。generate 填全部具名角色的 characters 和 visual_type，自动关联已选定妆。空镜或路人填 []。realistic（真人）和 anime（动漫）独立定妆。characters 查看定妆记录，presets 查看工作流。复用角色外观时优先用单人范围。shot 可选 full_body、close_up 或 whole，省略则优先复用已保存的正面全身，其次近景。多视图定妆还没有单人范围时，用 inspect 查看一次已选图，直接在 generate 的 character_crops 填当前图上的单人框，或用 character_reference_views 保存给以后复用。inspect 接受 chosen 路径，或一位角色的 character 和 visual_type。图片由工具读取、裁切和上传。缺少定妆时用 character_sheet 取候选。已排队或生成中时继续独立工作或结束本轮，等待通知后用 job_output 取结果。章节首版入书后再重画，revises 填图集路径。',
         parameters: {
           type: 'object',
           properties: {
@@ -323,8 +323,29 @@ export function installComfyTools(
             visual_type: { type: 'string', enum: characterVisualTypes },
             shot: {
               type: 'string',
-              enum: characterReferenceViews,
-              description: '可选的定妆参考图裁切。仅需要复用已标记的全身或近景视图时填写。',
+              enum: [...characterReferenceViews, 'whole'],
+              description: '定妆参考范围。whole 明确用整张图，省略时优先复用已保存的全身或近景。',
+            },
+            character_crops: {
+              type: 'array',
+              maxItems: 4,
+              description: '仅用于 generate。为本次生图指定单人裁切，覆盖该角色的已保存范围。',
+              items: {
+                type: 'object',
+                properties: {
+                  character: { type: 'string', maxLength: 80 },
+                  reference: { type: 'string', description: 'inspect 所查看的当前定妆图路径。' },
+                  box: {
+                    type: 'array',
+                    minItems: 4,
+                    maxItems: 4,
+                    items: { type: 'integer', minimum: 0, maximum: 1000 },
+                    description: '原图上的单人框 [左,上,右,下]，单位是原图千分比。',
+                  },
+                },
+                required: ['character', 'reference', 'box'],
+                additionalProperties: false,
+              },
             },
             views: {
               type: 'object',
@@ -407,12 +428,12 @@ export function installComfyTools(
           schema: { type: 'string' },
           render(args, value) {
             if (args.action !== 'inspect') return [{ type: 'text', text: value }];
-            const { attachment, label, width, height, chapterDelivery } = JSON.parse(value);
+            const { attachment, label, width, height, imagePath, chapterDelivery } = JSON.parse(value);
             const caption = width && height ? `${label}（${width} × ${height}）` : label;
             return [
               {
                 type: 'text',
-                text: chapterDelivery ? caption + '\n' + JSON.stringify(chapterDelivery) : caption,
+                text: [caption, imagePath, chapterDelivery && JSON.stringify(chapterDelivery)].filter(Boolean).join('\n'),
               },
               { type: 'image', attachment },
             ];
@@ -457,7 +478,7 @@ export function installComfyTools(
                     'action',
                     'prompt',
                     'caption',
-                    ...(sheet ? ['character', 'new_variants'] : ['characters', 'revises', 'shot']),
+                    ...(sheet ? ['character', 'new_variants'] : ['characters', 'revises', 'shot', 'character_crops']),
                     'reference',
                     'preset',
                     'visual_type',
@@ -482,7 +503,7 @@ export function installComfyTools(
             ].includes(action) ||
             (!lookup && Object.keys(args).some((key) => !keys.includes(key))) ||
             (!lookup && args.visual_type !== undefined && !characterVisualTypes.includes(args.visual_type)) ||
-            (!lookup && args.shot !== undefined && !characterReferenceViews.includes(args.shot)) ||
+            (!lookup && args.shot !== undefined && args.shot !== 'whole' && !characterReferenceViews.includes(args.shot)) ||
             (marking &&
               (!characterVisualTypes.includes(args.visual_type) || typeof reference !== 'string')) ||
             (!lookup && args.revises !== undefined && !/^illustrations\/[a-f0-9]{64}\.json$/.test(args.revises)) ||
@@ -538,6 +559,7 @@ export function installComfyTools(
             assertScope(exec);
             return JSON.stringify({
               attachment,
+              imagePath,
               label: label || '本书插图',
               width,
               height,
@@ -564,6 +586,7 @@ export function installComfyTools(
             });
           const sheetCharacter = !row && sheet ? visualCharacter(args.character, args.visual_type) : null;
           let cast = [];
+          const inlineCrops = new Map();
           if (!row && action === 'generate') {
             if (args.characters === undefined)
               return state('identify-characters', {
@@ -576,13 +599,28 @@ export function installComfyTools(
                 characters: pending,
                 next: '为缺少候选的角色生成同一 visual_type 的候选，有候选的等作者定妆。正文可继续交付。',
               });
-            if (args.shot) {
-              const missing = cast.filter(({ referenceViews }) => !referenceViews?.[args.shot]);
+            if (args.character_crops !== undefined) {
+              if (!Array.isArray(args.character_crops) || args.character_crops.length > 4 ||
+                  (args.shot === 'whole' && args.character_crops.length))
+                throw new Error('单人裁切最多四位，且不能与整张定妆模式同时使用。');
+              for (const crop of args.character_crops) {
+                const { id } = visualCharacter(crop?.character, args.visual_type);
+                const selected = cast.find((character) => character.id === id);
+                if (!selected || inlineCrops.has(id) || !Array.isArray(crop.box))
+                  throw new Error('单人裁切必须对应画面中的角色，每位角色只能填一次。');
+                if (crop.reference !== selected.chosen)
+                  throw new Error('裁切所用的定妆已变化，请查看当前已选定妆图。');
+                inlineCrops.set(id, crop.box);
+              }
+            }
+            if (characterReferenceViews.includes(args.shot)) {
+              const missing = cast.filter(({ id, referenceViews }) =>
+                !inlineCrops.has(id) && !referenceViews?.[args.shot]);
               if (missing.length)
                 return state('character-reference-views-needed', {
                   shot: args.shot,
                   characters: missing,
-                  next: '用 inspect 查看 chosen，再用 character_reference_views 标记单人视图，随后重试。',
+                  next: '用 inspect 查看一次 chosen，再在 generate 的 character_crops 填该角色的单人框，或先用 character_reference_views 保存范围。',
                 });
             }
           }
@@ -693,11 +731,12 @@ export function installComfyTools(
               if (reference) refs.reference = reference;
               if (config.requiresReference && !refs.reference) throw new Error('此编辑预设需要提供参考图。');
               const referenceCrops = {};
-              const usedViews = cast.map(({ name, chosen, referenceViews }, index) => {
-                const shot = args.shot;
-                const box = shot && referenceViews?.[shot];
+              const usedViews = cast.map(({ id, name, chosen, referenceViews }, index) => {
+                const inline = inlineCrops.get(id);
+                const shot = args.shot ?? characterReferenceViews.find((view) => referenceViews?.[view]);
+                const box = inline ?? referenceViews?.[shot];
                 if (box) referenceCrops[identitySlots[index]] = box;
-                return { name, imagePath: chosen, ...(box ? { view: shot, box } : {}) };
+                return { name, imagePath: chosen, ...(box ? { view: inline ? 'custom' : shot, box } : {}) };
               });
               const assets = {};
               for (const [key, path] of Object.entries(refs)) {

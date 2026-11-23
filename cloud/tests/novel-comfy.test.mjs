@@ -671,6 +671,7 @@ test('book-scoped agent can submit, resume after reload, and publish a candidate
     'inspect-chosen-by-character',
   );
   assert.deepEqual([byCharacter.width, byCharacter.height], [1536, 896]);
+  assert.equal(byCharacter.imagePath, chosen);
   const beforeMarking = prompts;
   const shot = { ...drawing, shot: 'close_up' };
   assert.equal((await profiled(shot, 'missing-views')).status, 'character-reference-views-needed');
@@ -709,7 +710,22 @@ test('book-scoped agent can submit, resume after reload, and publish a candidate
     width: 353,
     height: 824,
   });
-  const sheetReference = await profiled(drawing, 'default-sheet-reference');
+  const auto = await profiled(drawing, 'default-saved-reference');
+  assert.deepEqual(auto.characterReferences, [
+    { name: '陆蘅', imagePath: chosen, view: 'full_body', box: mark.views.full_body },
+  ]);
+  const inline = { character: '陆蘅', reference: chosen, box: [100, 100, 300, 700] };
+  await assert.rejects(
+    profiled({ ...drawing, character_crops: [{ ...inline, reference }] }, 'stale-inline-crop'),
+    /定妆已变化/,
+  );
+  const cropped = await profiled({ ...drawing, character_crops: [inline] }, 'inline-crop');
+  assert.deepEqual(cropped.characterReferences, [
+    { name: '陆蘅', imagePath: chosen, view: 'custom', box: inline.box },
+  ]);
+  assert.deepEqual(rendered.at(-1)['5'].inputs.images, ['reference-crop-4', 0]);
+  assert.deepEqual(store.resolve(novelId, ['陆蘅'], 'anime')[0].referenceViews, mark.views);
+  const sheetReference = await profiled({ ...drawing, shot: 'whole' }, 'explicit-sheet-reference');
   assert.deepEqual(sheetReference.characterReferences, [{ name: '陆蘅', imagePath: chosen }]);
   assert.deepEqual(rendered.at(-1)['5'].inputs.images, ['4', 0]);
   const realistic = await call({ ...drawing, visual_type: 'realistic' }, 'realism-after-anime-lock');

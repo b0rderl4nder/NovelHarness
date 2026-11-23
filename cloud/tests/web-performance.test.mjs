@@ -6,6 +6,7 @@ import {
   assetEncoding,
   assetDeliveryHeaders,
   streamBrowserBody,
+  nativePluginEncoding,
   novelModulePreloads,
   invalidatesNativeTransports,
 } from '../official/novel/web-performance.mjs';
@@ -91,6 +92,17 @@ test('version-addressed private code can compress while private API data stays u
   assert.equal(assetEncoding(request(native + '?novel=' + revision, 'gzip, br;q=0.5'), response), 'gzip');
   for (const path of [native, '/api/novels/book/documents', '/studio/development/editor.mjs'])
     assert.equal(assetEncoding(request(path), response), null);
+});
+test('native plugin bundles use loopback identity only when the browser prefers Brotli', () => {
+  const plugin = '/plugins/??one/client.js,two/client.js&rev=example';
+  assert.equal(nativePluginEncoding(request(plugin)), 'identity');
+  assert.equal(nativePluginEncoding(request(plugin, 'gzip')), null);
+  assert.equal(nativePluginEncoding(request(plugin, 'gzip, br;q=0.5')), null);
+  assert.equal(nativePluginEncoding(request(plugin, 'gzip, br', 'HEAD')), null);
+  assert.equal(nativePluginEncoding(request(plugin.replace('&rev=example', ''))), null);
+  assert.equal(nativePluginEncoding(request('/api/session/list')), null);
+  const range = new Request(request(plugin), { headers: { 'accept-encoding': 'br', range: 'bytes=0-9' } });
+  assert.equal(nativePluginEncoding(range), null);
 });
 test('native shell preloads the same versioned novel entries before plugin activation', () => {
   const html = novelModulePreloads('/studio/current/pages/public/novel-assets/');

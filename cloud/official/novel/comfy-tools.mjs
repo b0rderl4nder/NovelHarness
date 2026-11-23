@@ -279,7 +279,7 @@ export function installComfyTools(
       {
         name: 'novel_generate_image',
         description:
-          '画图、改图和生成候选人设图。generate 的 characters 列出全部具名角色，空镜或路人用空数组。具名角色和 character_sheet 都需要 visual_type：realistic（真人）或 anime（动漫）。每种画风由作者独立定妆。需要单人参考时传入 shot，工具按镜头取用已标记的视图；省略 shot 使用完整定妆图。缺少视图时用 inspect 查看 chosen，再用 character_reference_views 标记清晰的正面全身和脸部近景，后续按镜头复用。缺少定妆时用 character_sheet 生成三张候选供作者选择。characters 查看定妆，presets 查看工作流。已排队或生成中时继续独立工作或结束本轮，等待通知后用 job_output 取结果，无需轮询或重新提交。章节首版入书后再重画，revises 填图集路径。',
+          '画图、改图和生成候选人设图。使用定妆时直接调用 generate，填全部具名角色的 characters 和 visual_type，工具会自动送入每位角色已选的定妆图。空镜或路人填 []。realistic（真人）和 anime（动漫）独立定妆。characters 查看定妆记录，presets 查看工作流。只有要核对外观或标记裁切时才用 inspect，填当前 chosen 路径，或填一位角色的 character 和 visual_type。无需自行解码、导出或逐张读取候选。shot 只在需要单人裁切时填；没有对应裁切且作者只要求复用定妆时，省略 shot 即可使用完整定妆图。要保存裁切，可用 character_reference_views。缺少定妆时用 character_sheet 生成三张候选供作者选择。已排队或生成中时继续独立工作或结束本轮，等待通知后用 job_output 取结果，无需轮询或重新提交。章节首版入书后再重画，revises 填图集路径。',
         parameters: {
           type: 'object',
           properties: {
@@ -299,7 +299,7 @@ export function installComfyTools(
             character: {
               type: 'string',
               maxLength: 80,
-              description: 'character_sheet 或 character_reference_views 的角色姓名。',
+              description: 'character_sheet、inspect 或 character_reference_views 使用的一位角色姓名。',
             },
             new_variants: {
               type: 'boolean',
@@ -324,7 +324,7 @@ export function installComfyTools(
             shot: {
               type: 'string',
               enum: characterReferenceViews,
-              description: 'generate 镜头：全身或动作填 full_body；脸部或肩部特写填 close_up。',
+              description: '可选的定妆参考图裁切。仅需要复用已标记的全身或近景视图时填写。',
             },
             views: {
               type: 'object',
@@ -396,7 +396,7 @@ export function installComfyTools(
               type: 'string',
               maxLength: 256,
               description:
-                'generate 支持 chat:latest、对话图片 ID 或本书 illustrations/ 路径。inspect 用图集路径，character_reference_views 必须填写当前定妆图路径。',
+                'generate 的额外场景参考支持 chat:latest、对话图片 ID 或本书 illustrations/ 路径；角色定妆自动关联。inspect 可填图集路径，或用 character 和 visual_type 定位定妆。character_reference_views 必须填写当前定妆图路径。',
             },
             job_id: { type: 'string', description: 'status 使用本工具先前返回的任务 ID。' },
           },
@@ -444,34 +444,31 @@ export function installComfyTools(
           const sheet = action === 'character_sheet';
           const marking = action === 'character_reference_views';
           const generation = sheet || action === 'generate';
+          const lookup = ['presets', 'references', 'characters', 'inspect'].includes(action);
           const references = () => chatImageReferences(sessionQuery, exec.agent.session.id, exec.signal);
           const service = makeDocumentService(fs, db, book);
           const chapterDelivery = () => chapterDeliveryFor(sessionQuery, exec, root, book, service);
           const keys =
-            action === 'presets' || action === 'references' || action === 'characters'
-              ? ['action']
-              : action === 'status'
-                ? ['action', 'job_id']
-                : action === 'inspect'
-                  ? ['action', 'reference']
-                  : marking
-                    ? ['action', 'character', 'visual_type', 'reference', 'views']
-                    : [
-                        'action',
-                        'prompt',
-                        'caption',
-                        ...(sheet ? ['character', 'new_variants'] : ['characters', 'revises', 'shot']),
-                        'reference',
-                        'preset',
-                        'visual_type',
-                        'seed',
-                        'style',
-                        'composition',
-                        'atmosphere',
-                        'negative_prompt',
-                        'adjustments',
-                        'regions',
-                      ];
+            action === 'status'
+              ? ['action', 'job_id']
+              : marking
+                ? ['action', 'character', 'visual_type', 'reference', 'views']
+                : [
+                    'action',
+                    'prompt',
+                    'caption',
+                    ...(sheet ? ['character', 'new_variants'] : ['characters', 'revises', 'shot']),
+                    'reference',
+                    'preset',
+                    'visual_type',
+                    'seed',
+                    'style',
+                    'composition',
+                    'atmosphere',
+                    'negative_prompt',
+                    'adjustments',
+                    'regions',
+                  ];
           if (
             ![
               'presets',
@@ -483,13 +480,12 @@ export function installComfyTools(
               'character_sheet',
               'character_reference_views',
             ].includes(action) ||
-            Object.keys(args).some((key) => !keys.includes(key)) ||
-            (args.visual_type !== undefined && !characterVisualTypes.includes(args.visual_type)) ||
-            (args.shot !== undefined && !characterReferenceViews.includes(args.shot)) ||
+            (!lookup && Object.keys(args).some((key) => !keys.includes(key))) ||
+            (!lookup && args.visual_type !== undefined && !characterVisualTypes.includes(args.visual_type)) ||
+            (!lookup && args.shot !== undefined && !characterReferenceViews.includes(args.shot)) ||
             (marking &&
               (!characterVisualTypes.includes(args.visual_type) || typeof reference !== 'string')) ||
-            (action === 'inspect' && typeof reference !== 'string') ||
-            (args.revises !== undefined && !/^illustrations\/[a-f0-9]{64}\.json$/.test(args.revises)) ||
+            (!lookup && args.revises !== undefined && !/^illustrations\/[a-f0-9]{64}\.json$/.test(args.revises)) ||
             (action === 'status'
               ? typeof id !== 'string' || !jobId.test(id)
               : generation && (typeof prompt !== 'string' || !prompt.trim() || prompt.length > 12000))
@@ -520,10 +516,18 @@ export function installComfyTools(
             });
           }
           if (action === 'inspect') {
+            let imagePath = reference;
+            if (!imagePath) {
+              const name = args.character || (args.characters?.length === 1 ? args.characters[0] : null);
+              if (!name || !characterVisualTypes.includes(args.visual_type))
+                throw new Error('查看插图需要 reference 路径，或一位角色的 character 和 visual_type。只需使用定妆时，generate 会自动关联。');
+              imagePath = characterVisuals.get(book, visualCharacter(name, args.visual_type)).chosen;
+              if (!imagePath) throw new Error('这位角色在该画风下还没有已选定妆图。可用 characters 查看。');
+            }
             const { data, label, width, height } = service.run({
               kind: 'illustrations',
               action: 'read',
-              imagePath: reference,
+              imagePath,
             });
             const attachment = await attachments.saveImage({
               data: Buffer.from(data.split(',')[1], 'base64'),

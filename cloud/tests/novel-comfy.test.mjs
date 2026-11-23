@@ -656,6 +656,21 @@ test('book-scoped agent can submit, resume after reload, and publish a candidate
   assert.equal(rendered.at(-1)['4'].inputs.image, 'fixture/upload.webp');
   assert.match(rendered.at(-1)['5'].inputs.text, /手绘水彩/);
   assert.equal((await call({ action: 'characters' }, 'check-lock')).characters[0].chosen, chosen);
+  const lookup = await profiled(
+    { action: 'characters', characters: ['陆蘅'], visual_type: 'anime', prompt: '补充画面' },
+    'lookup-with-extra-fields',
+  );
+  assert.equal(lookup.characters[0].chosen, chosen);
+  assert.deepEqual(
+    await profiled({ action: 'presets', characters: [] }, 'presets-with-extra-fields'),
+    await profiled({ action: 'presets' }, 'presets-list'),
+  );
+  await assert.rejects(profiled({ action: 'inspect' }, 'inspect-without-image'), /需要 reference/);
+  const byCharacter = await profiled(
+    { action: 'inspect', character: '陆蘅', visual_type: 'anime' },
+    'inspect-chosen-by-character',
+  );
+  assert.deepEqual([byCharacter.width, byCharacter.height], [1536, 896]);
   const beforeMarking = prompts;
   const shot = { ...drawing, shot: 'close_up' };
   assert.equal((await profiled(shot, 'missing-views')).status, 'character-reference-views-needed');

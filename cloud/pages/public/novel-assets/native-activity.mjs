@@ -1,16 +1,35 @@
 // A view of the ORIGINAL session, never a second job lifecycle or proposal receipt.
+const submissionReasons = new Map([
+  ['session/writer-held', '此对话正被另一个客户端占用'],
+  ['session/not-found', '当前对话已不可用，请从书库重新打开'],
+  ['session/attachment-invalid', '附件未通过校验，请检查格式和大小后重新添加'],
+  ['subagent/attachment-invalid', '当前任务无法接收这个附件'],
+  ['session/model-unavailable', '所选模型不可用，请检查模型设置'],
+  ['session/provider-credentials-unavailable', '模型凭据无法读取，请检查模型设置'],
+  ['gateway/input-invalid', '工作台拒绝了这次请求的格式'],
+  ['gateway/internal', '工作台处理提交时出错'],
+  ['gateway/service-unavailable', '提交服务暂不可用'],
+]);
+
 export function nativeActivity(snapshot, terminal, status) {
   if (!snapshot || snapshot.removed) return null;
   if (snapshot.openError || snapshot.openState === 'error')
     return { kind: 'error', text: '对话连接中断 · 结果尚未确认', canStop: !!snapshot.running };
   const stopped =
     terminal?.type === 'turn/end' && terminal.data?.reason?.kind === 'aborted' && !snapshot.running;
-  if (snapshot.promptError && !(snapshot.promptError.op === 'stop' && stopped))
+  if (snapshot.promptError && !(snapshot.promptError.op === 'stop' && stopped)) {
+    const { op, error } = snapshot.promptError;
+    // Request errors can include paths, credentials, or request excerpts in their raw details.
+    const code = typeof error?.code === 'string' && /^[a-z][a-z0-9-]{0,30}\/[a-z][a-z0-9-]{0,38}$/.test(error.code)
+      ? error.code
+      : '';
+    const reason = submissionReasons.get(code) ?? (code ? '请求未确认' : '未收到具体错误原因');
     return {
       kind: 'error',
-      text: snapshot.promptError.op === 'stop' ? '停止失败 · 详情见对话' : '提交失败 · 详情见对话',
+      text: `${op === 'stop' ? '停止失败' : '提交失败'} · ${reason}${code ? `（${code}）` : ''}`,
       canStop: !!snapshot.running,
     };
+  }
   const waiting = { approval: '等待你确认操作', 'plan-review': '等待你审核计划', question: '等待你回答' }[
     status?.pendingInteraction?.kind
   ];

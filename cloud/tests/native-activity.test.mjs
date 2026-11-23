@@ -46,6 +46,8 @@ test('submission failure explains the error directly and omits raw request detai
   const text = (error) => nativeActivity({ promptError: { op: 'send', error } }, null).text;
   assert.match(text({ code: 'session/writer-held' }), /另一个客户端.*session\/writer-held/);
   assert.match(text({ code: 'session/attachment-invalid' }), /附件.*session\/attachment-invalid/);
+  assert.match(text({ code: 'session/attachment-invalid', details: { reason: 'MODEL_DOES_NOT_SUPPORT_IMAGES' } }), /当前模型不支持图片.*MODEL_DOES_NOT_SUPPORT_IMAGES/);
+  assert.match(text({ code: 'session/attachment-invalid', details: { reason: 'IMAGE_DIMENSION_TOO_LARGE' } }), /宽高超过限制/);
   assert.equal(text({ code: 'transport/timeout', message: 'private draft text' }), '提交失败 · 请求未确认（transport/timeout）');
   assert.equal(text({ code: 'secret shown in a stack' }), '提交失败 · 未收到具体错误原因');
 });

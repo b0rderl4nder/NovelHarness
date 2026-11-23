@@ -2,13 +2,25 @@
 const submissionReasons = new Map([
   ['session/writer-held', '此对话正被另一个客户端占用'],
   ['session/not-found', '当前对话已不可用，请从书库重新打开'],
-  ['session/attachment-invalid', '附件未通过校验，请检查格式和大小后重新添加'],
+  ['session/attachment-invalid', '附件未通过校验，服务未返回具体原因'],
   ['subagent/attachment-invalid', '当前任务无法接收这个附件'],
   ['session/model-unavailable', '所选模型不可用，请检查模型设置'],
   ['session/provider-credentials-unavailable', '模型凭据无法读取，请检查模型设置'],
   ['gateway/input-invalid', '工作台拒绝了这次请求的格式'],
   ['gateway/internal', '工作台处理提交时出错'],
   ['gateway/service-unavailable', '提交服务暂不可用'],
+]);
+const attachmentReasons = new Map([
+  ['MODEL_DOES_NOT_SUPPORT_IMAGES', '当前模型不支持图片，请切换支持图片的模型'],
+  ['IMAGE_DIMENSION_TOO_LARGE', '图片宽高超过限制，请缩小像素尺寸'],
+  ['IMAGE_TOO_MANY_PIXELS', '图片总像素超过限制，请缩小像素尺寸'],
+  ['IMAGE_TOO_LARGE', '单张图片文件超过大小上限'],
+  ['IMAGES_TOO_LARGE', '这条消息的图片总大小超过上限'],
+  ['TOO_MANY_IMAGES', '这条消息的图片数量超过上限'],
+  ['INVALID_IMAGE', '图片无法解码，请重新导出后添加'],
+  ['IMAGE_TYPE_MISMATCH', '图片实际格式与声明格式不一致，请重新导出'],
+  ['UNSUPPORTED_IMAGE_TYPE', '图片格式暂不支持'],
+  ['FILE_NOT_STAGED', '附件上传未完成，请重新添加'],
 ]);
 
 export function nativeActivity(snapshot, terminal, status) {
@@ -23,10 +35,15 @@ export function nativeActivity(snapshot, terminal, status) {
     const code = typeof error?.code === 'string' && /^[a-z][a-z0-9-]{0,30}\/[a-z][a-z0-9-]{0,38}$/.test(error.code)
       ? error.code
       : '';
-    const reason = submissionReasons.get(code) ?? (code ? '请求未确认' : '未收到具体错误原因');
+    const attachmentCode = /^(subagent|session)\/attachment-invalid$/.test(code) &&
+      typeof error?.details?.reason === 'string' && /^[A-Z][A-Z_]{0,50}$/.test(error.details.reason)
+      ? error.details.reason : '';
+    const reason = attachmentReasons.get(attachmentCode) ?? submissionReasons.get(code) ??
+      (code ? '请求未确认' : '未收到具体错误原因');
+    const details = [code, attachmentCode].filter(Boolean).join(' / ');
     return {
       kind: 'error',
-      text: `${op === 'stop' ? '停止失败' : '提交失败'} · ${reason}${code ? `（${code}）` : ''}`,
+      text: `${op === 'stop' ? '停止失败' : '提交失败'} · ${reason}${details ? `（${details}）` : ''}`,
       canStop: !!snapshot.running,
     };
   }

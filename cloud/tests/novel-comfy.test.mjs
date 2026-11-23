@@ -99,6 +99,17 @@ test('author-locked character sheets are book-scoped and checked on changes', (t
   store.choose(novelId, { ...pick(realOptions), visualType: 'realistic', imagePath: alternate }, () => {});
   assert.equal(store.resolve(novelId, ['陆蘅'], 'realistic')[0].chosen, alternate);
   assert.equal(store.resolve(novelId, ['陆蘅'], 'anime')[0].chosen, reference);
+  const views = { full_body: [250, 30, 530, 970] };
+  const dimensions = { width: 1536, height: 896 };
+  store.saveReferenceViews(novelId, anime, reference, views, dimensions);
+  assert.deepEqual(createCharacterVisuals(db).get(novelId, anime).referenceViews, views);
+  assert.equal(store.get(novelId, realistic).referenceViews, undefined);
+  const latest = store.get(novelId, anime);
+  store.choose(novelId, { ...pick(latest), visualType: 'anime', imagePath: alternate }, () => {});
+  assert.equal(store.get(novelId, anime).referenceViews, undefined);
+  assert.throws(() => store.saveReferenceViews(novelId, anime, reference, views, dimensions), {
+    status: 409,
+  });
 });
 
 test('turnaround sheets use three seeds and scene references require sufficient independent slots', () => {
@@ -197,6 +208,37 @@ test('ComfyUI forwards the matching sampler progress and short-lived preview', a
   watcher.stop();
   live.end();
   assert.equal(progress.read(novelId, 'test-call', true), null);
+});
+
+test('a saved candidate appears before its batch finishes and survives background handoff', async (t) => {
+  const fetched = [];
+  const server = createServer((req, res) => {
+    const url = new URL(req.url, 'http://localhost');
+    fetched.push(url.searchParams.get('filename'));
+    res.writeHead(200, { 'content-type': 'image/webp' }).end(bytes);
+  });
+  const sockets = new WebSocketServer({ server });
+  t.after(() => { for (const socket of sockets.clients) socket.terminate(); sockets.close(); server.close(); });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const connecting = once(sockets, 'connection');
+  const progress = createComfyProgress();
+  const live = progress.begin(novelId, 'sheet-call', 3);
+  const turn = new AbortController();
+  const watcher = await watchComfy(new URL(`http://127.0.0.1:${server.address().port}/`), live, turn.signal, { candidateCount: 3 });
+  const [socket] = await connecting;
+  watcher.track('sheet-prompt');
+  watcher.retain();
+  turn.abort();
+  for (const [promptId, filename] of [['wrong-prompt', 'wrong.webp'], ['sheet-prompt', 'first.webp'], ['sheet-prompt', 'first.webp']])
+    socket.send(JSON.stringify({ type: 'executed', data: { prompt_id: promptId, output: { images: [{ filename, type: 'output' }] } } }));
+  for (let i = 0; i < 30 && !progress.read(novelId, 'sheet-call').previewId; i++) await delay(20);
+  assert.deepEqual(fetched, ['first.webp']);
+  assert.equal(progress.read(novelId, 'sheet-call').candidatesFinished, 1);
+  assert.equal(progress.read(novelId, 'sheet-call').previewCompleted, true);
+  assert.deepEqual(progress.read(novelId, 'sheet-call', true).bytes, bytes);
+  watcher.stop();
+  live.end();
 });
 
 test('book-scoped agent can submit, resume after reload, and publish a candidate without editing prose', async (t) => {
@@ -369,7 +411,7 @@ test('book-scoped agent can submit, resume after reload, and publish a candidate
                 (item) => operation.imagePath === 'illustrations/' + sha(item) + '.json',
               );
               assert(match);
-              return imageAsset(match);
+              return { ...imageAsset(match), width: 1536, height: 896 };
             }
             assert.equal(operation.action, 'upload');
             assert.equal(imageAsset(operation.content).label, '灯塔');
@@ -567,6 +609,10 @@ test('book-scoped agent can submit, resume after reload, and publish a candidate
   );
   assert.equal(waitingSheet.status, 'queued');
   const promptCountBeforeRecovery = prompts;
+  const repeatSheet = await call({ action: 'character_sheet', visual_type: 'anime', character: '陆蘅', prompt: '同一角色，改用另一个动作。', new_variants: true }, 'lu-sheet-new-call');
+  assert.equal(repeatSheet.jobId, waitingSheet.jobId);
+  assert.equal(repeatSheet.progressCallId, 'lu-sheet');
+  assert.equal(prompts, promptCountBeforeRecovery);
   const uploadsBeforeRecovery = uploads.length;
   ready = true;
   // After the original turn and tool instance are gone, a reopened chat can
@@ -600,33 +646,82 @@ test('book-scoped agent can submit, resume after reload, and publish a candidate
   assert.equal(rendered.at(-1)['4'].inputs.image, 'fixture/upload.webp');
   assert.match(rendered.at(-1)['5'].inputs.text, /手绘水彩/);
   assert.equal((await call({ action: 'characters' }, 'check-lock')).characters[0].chosen, chosen);
+  const beforeMarking = prompts;
+  const shot = { ...drawing, shot: 'close_up' };
+  assert.equal((await profiled(shot, 'missing-views')).status, 'character-reference-views-needed');
+  const turnaround = await profiled({ action: 'inspect', reference: chosen }, 'inspect-chosen-views');
+  assert.deepEqual([turnaround.width, turnaround.height], [1536, 896]);
+  const mark = {
+    action: 'character_reference_views',
+    character: '陆蘅',
+    visual_type: 'anime',
+    reference: chosen,
+    views: { close_up: [65, 50, 250, 510], full_body: [270, 30, 500, 950] },
+  };
+  await assert.rejects(profiled({ ...mark, reference }, 'other-image'), /只能标记/);
+  await assert.rejects(
+    profiled({ ...mark, views: { close_up: [0, 0, 1000, 1000] } }, 'whole-sheet'),
+    /小于整张/,
+  );
+  const marked = await profiled(mark, 'remember-views');
+  assert.deepEqual(marked.characterVisual.referenceViews, mark.views);
+  assert.equal(prompts, beforeMarking);
+  const close = await profiled(shot, 'close-up-reference');
+  assert.deepEqual(close.characterReferences, [
+    { name: '陆蘅', imagePath: chosen, view: 'close_up', box: mark.views.close_up },
+  ]);
+  assert.deepEqual(rendered.at(-1)['reference-crop-4'], {
+    class_type: 'ImageCrop',
+    inputs: { image: ['4', 0], x: 100, y: 45, width: 284, height: 412 },
+  });
+  assert.deepEqual(rendered.at(-1)['5'].inputs.images, ['reference-crop-4', 0]);
+  const full = await profiled({ ...drawing, shot: 'full_body' }, 'full-body-reference');
+  assert.equal(full.characterReferences[0].view, 'full_body');
+  assert.deepEqual(rendered.at(-1)['reference-crop-4'].inputs, {
+    image: ['4', 0],
+    x: 415,
+    y: 27,
+    width: 353,
+    height: 824,
+  });
+  const sheetReference = await profiled(drawing, 'default-sheet-reference');
+  assert.deepEqual(sheetReference.characterReferences, [{ name: '陆蘅', imagePath: chosen }]);
+  assert.deepEqual(rendered.at(-1)['5'].inputs.images, ['4', 0]);
   const realistic = await call({ ...drawing, visual_type: 'realistic' }, 'realism-after-anime-lock');
   assert.equal(realistic.status, 'character-design-needed');
   assert.equal(realistic.characters[0].visualType, 'realistic');
   assert.deepEqual(realistic.characters[0].candidates, []);
   const beforeRealistic = referenceUploads.length;
-  const realisticSheet = await call({
-    action: 'character_sheet',
-    character: '陆蘅',
-    visual_type: 'realistic',
-    caption: '灯塔',
-    prompt: '成年女性，白围巾，写实摄影。',
-  }, 'realistic-sheet-after-anime');
+  const realisticSheet = await call(
+    {
+      action: 'character_sheet',
+      character: '陆蘅',
+      visual_type: 'realistic',
+      caption: '灯塔',
+      prompt: '成年女性，白围巾，写实摄影。',
+    },
+    'realistic-sheet-after-anime',
+  );
   assert.equal(realisticSheet.status, 'character-options');
   assert.equal(realisticSheet.characterVisual.id, sheet.characterVisual.id);
   assert.equal(realisticSheet.characterVisual.candidates.length, 3);
   assert.equal(referenceUploads.length, beforeRealistic);
   const realChoice = realisticSheet.characterVisual.candidates[1];
-  store.choose(novelId, {
-    id: realisticSheet.characterVisual.id,
-    visualType: 'realistic',
-    revision: realisticSheet.characterVisual.revision,
-    imagePath: realChoice,
-  }, () => {});
+  store.choose(
+    novelId,
+    {
+      id: realisticSheet.characterVisual.id,
+      visualType: 'realistic',
+      revision: realisticSheet.characterVisual.revision,
+      imagePath: realChoice,
+    },
+    () => {},
+  );
   const realisticScene = await call({ ...drawing, visual_type: 'realistic' }, 'locked-realistic');
   assert.deepEqual(realisticScene.characterReferences, [{ name: '陆蘅', imagePath: realChoice }]);
   assert.equal(store.resolve(novelId, ['陆蘅'], 'anime')[0].chosen, chosen);
-  let handle, backgroundStarts = 0;
+  let handle,
+    backgroundStarts = 0;
   const native = tools(novelId, config, {
     start(spec) {
       assert.equal(spec.owner, novelId);

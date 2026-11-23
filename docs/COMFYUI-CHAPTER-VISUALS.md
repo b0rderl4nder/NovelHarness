@@ -6,9 +6,9 @@
 
 登录后，从侧栏进入 **数据与访问 → 插图生成 · ComfyUI**。这里可测试连接，选择默认文生图和参考图预设，并在「工作流参数」下修改预设已开放的尺寸、采样步数、采样器、CFG 等默认值。保存后用于新任务。主机配置可用 `allowedComfyEndpoints` 登记其他 ComfyUI 地址，网页从已登记的地址中切换。添加模型、工作流或新节点绑定仍在主机的 JSON 文件中完成。
 
-聊天会在插图任务运行时显示队列或当前采样步骤。支持运行中预览的 ComfyUI 工作流会同时发来临时小图。成图存入图集后就在聊天里显示，回合结束、工具详情折叠后仍能查看。浏览器通过 NovelHarness 读取进度和图片，由主机连接 ComfyUI。 [ComfyUI WebSocket 接口](https://docs.comfy.org/development/comfyui-server/comms_routes)
+聊天会显示排队状态和采样进度。支持运行中预览的工作流可以发来临时小图。定妆批次会显示已画好的张数和最新一张候选，整批存入图集后可选择定妆。同一角色同一画风在生成期间会复用当前批次。回合结束后仍可在聊天或图集查看成图。 [ComfyUI WebSocket 接口](https://docs.comfy.org/development/comfyui-server/comms_routes)
 
-有具名角色首次出图时，助手会把人设候选直接发在对话里。点「候选 A / B / C」切换，点大图看细节，然后点「设为定妆」。同一本书里换画风仍使用已选图，改选时用「更换定妆」。等待选图期间可继续写正文。
+有具名角色首次出图时，助手会把人设候选直接发在对话里。点「候选 A / B / C」切换，点大图看细节，然后点「设为定妆」。同一角色的动漫和真人定妆各自独立，改选时用「更换定妆」。等待选图期间可继续写正文。
 
 ```json
 {
@@ -44,7 +44,8 @@
 - 图生图工作流同时开放带 `step` 的 `width` 和 `height` 时，默认在允许范围内沿用参考图的比例。助手仍可明确设置尺寸，未指定的另一边会尽量维持参考图比例。
 - MOSS 版式预设设置 `layout: [宽, 高]`，与实际工作流尺寸一致。`regions` 用 `[左, 上, 右, 下]` 的 0–1000 相对坐标标注人、物和文字。文字框另给逐字文本。服务会换算为 MOSS 的中心像素坐标。
 - `reference` 可填 `chat:latest`、`references` 返回的当前对话图片 ID，或本书图集路径。它提供一张单独的场景参考图，需要有对应输入的 ComfyUI 工作流。助手理解画面还需要当前 DSH 模型支持视觉输入，可用 `inspect` 查看图集图片并分析成图。
-- `character_sheet` 为一个角色生成三张候选，每张为面部近照及正、侧、背全身图。作者确认后，`generate` 随 `characters` 列出的名字自动传该角色的图集参考图。换画风仍读取同一次定妆，角色关系和正文保存在原有位置。作者要求探索新一批样式时可设 `new_variants`，原定妆会保留到作者再次选择。
+- `character_sheet` 为一个角色生成三张候选，每张包含面部近照及正、侧、背全身图。作者确认后，`generate` 按 `characters` 和 `visual_type` 读取对应定妆。作者要求探索新一批样式时可设 `new_variants`，当前定妆会保留到作者再次选择。
+- 可用 `inspect` 看已选定妆图，再用 `character_reference_views` 保存正面全身和近景两个单人范围。`generate` 传 `shot: "full_body"` 或 `"close_up"` 后，工具通过 ComfyUI 的 `ImageCrop` 从已选图裁出对应范围。省略 `shot` 时使用整张定妆图。单人范围按本书、角色、画风、所选图片保存，改选之后读取新图自己的范围。
 - 单角色可沿用图生图工作流的 `reference`。多角色工作流可按作者提供的出场顺序绑定 `characterReference1` 到 `characterReference4`，可用相应的 `useCharacterReference1` 等开关。当前图生图预设未提供足够独立输入时，助手会收到需要兼容工作流的状态。
 - 固定 `seed` 可在相同工作流和输入下复查。查询结果会带实际预设和种子。暂未完成的任务需要原预设才能继续取图。
 
@@ -53,6 +54,26 @@
 私人 ComfyUI 主机可直接使用 [Anima 配置](../cloud/shared/workflows/anima-quality.json)，也可将它的 `presets.anima` 合并进自己的配置并相应填写 `workflow` 路径。默认原生画幅 `1024×1344`，Anima Base v1、`er_sde`、32 步、CFG 4.5，保存 WebP 质量 94。也可在对话中指定横向、全身、镜头与画风。工作流需要 Anima Base、Qwen 0.6B 文本编码器和 Qwen Image VAE。模型权重由部署者按原许可安装。 [Anima 模型说明](https://huggingface.co/circlestone-labs/Anima) · [ComfyUI 示例](https://docs.comfy.org/tutorials/image/anima/anima)
 
 符合图集限制的 WebP 原样保存。图集单边支持 2048 像素，单个插图文件上限 480 KiB；超过限制时，先尝试保持像素尺寸重编码，再逐步缩小。实际生成分辨率由工作流决定。
+
+### 动漫单角色跨场景参考
+
+[MOSS CharRef v2](https://github.com/bag3labo/moss-image-edit-charref-v2) 是供动漫单人场景使用的可选工作流。按上游说明为 ComfyUI 安装其节点及权重，保存原仓库的 `moss_charref_reference_guidance_api.json`。将以下预设加入现有 `presets`。工具会把已选定妆图的单人区域接入该工作流。使用上游的 PNG 输出时，主机需配置 FFmpeg。
+
+```json
+{
+  "moss-charref": {
+    "label": "MOSS CharRef v2",
+    "workflow": "moss_charref_reference_guidance_api.json",
+    "requiresReference": true,
+    "guidance": "动漫单角色跨场景参考。请传 visual_type: anime、角色姓名及对应镜头的 shot。",
+    "bindings": {
+      "prompt": [["9", "prompt"]],
+      "reference": [["20", "image"]],
+      "seed": [["33", "noise_seed"]]
+    }
+  }
+}
+```
 
 ## 命令行批量生成
 

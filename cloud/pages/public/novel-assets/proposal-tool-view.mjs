@@ -200,7 +200,7 @@ export function installProposalToolViews(ctx, React) {
       h(
         'p',
         { role: 'status' },
-        [caption, message, state?.max && `${state.value} / ${state.max} 步`].filter(Boolean).join(' · '),
+        [caption, message, state?.candidateCount && `${state.candidatesFinished} / ${state.candidateCount} 张已画好`, state?.max && `${state.value} / ${state.max} 步`].filter(Boolean).join(' · '),
       ),
       state?.max ? h('progress', { max: state.max, value: state.value, 'aria-label': '当前采样进度' }) : null,
       state?.previewId && state.previewId !== previewError
@@ -209,10 +209,10 @@ export function installProposalToolViews(ctx, React) {
             { className: 'novel-generated-image' },
             h('img', {
               src: url + '&image=' + state.previewId,
-              alt: '绘制中的插图预览',
+              alt: state.previewCompleted ? '最新完成的候选图' : '绘制中的插图预览',
               onError: () => setPreviewError(state.previewId),
             }),
-            h('figcaption', null, '生成中预览'),
+            h('figcaption', null, state.previewCompleted ? '最新完成的候选图' : '生成中预览'),
           )
         : null,
     );
@@ -221,7 +221,8 @@ export function installProposalToolViews(ctx, React) {
     const { result, settled, failed, raw } = proposalToolModel(toolName, block);
     const action = block.args?.text?.('action');
     if (
-      ['inspect', 'presets', 'references', 'characters'].includes(action) ||
+      ['inspect', 'presets', 'references', 'characters', 'character_reference_views'].includes(action) ||
+      result?.status === 'character-reference-views-needed' ||
       result?.presets ||
       result?.references ||
       (settled && !failed && !result?.status && !result?.images)

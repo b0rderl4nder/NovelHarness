@@ -10,10 +10,14 @@ import { chapterDeliveryFor } from './comfy-chapter-delivery.mjs';
 import { createComfySettings } from './comfy-settings.mjs';
 import { createComfyProgress, watchComfy } from './comfy-progress.mjs';
 import {
+  bindReferenceCrops,
+  characterReferenceViews,
+  characterSheetCount,
   characterSheetLayout,
   characterVisualTypes,
   createCharacterVisuals,
   identityBindings,
+  referenceViewCrop,
   sheetCanvas,
   sheetGraph,
   visualCharacter,
@@ -54,6 +58,11 @@ export function installComfyTools(
   const find = (book, id) => db.one('SELECT * FROM novel_comfy_jobs WHERE book = ? AND id = ?', book, id);
   const findCall = (book, id) =>
     db.one('SELECT * FROM novel_comfy_jobs WHERE book = ? AND call_id = ?', book, id);
+  const pendingSheet = (book, character) => db.one(`SELECT * FROM novel_comfy_jobs
+    WHERE book=? AND images IS NULL AND json_extract(recipe,'$.characterSheet.id')=?
+    AND COALESCE(json_extract(recipe,'$.characterSheet.visualType'),'legacy')=? ORDER BY rowid DESC LIMIT 1`,
+    book, character.id, character.visualType,
+  );
   const settings = createComfySettings(db, configPath);
   const progress = createComfyProgress();
   const characterVisuals = createCharacterVisuals(db);
@@ -219,6 +228,7 @@ export function installComfyTools(
           };
         },
       });
+      watcher?.retain();
       background.set(row.id, id);
       return id;
     } catch {
@@ -269,7 +279,7 @@ export function installComfyTools(
       {
         name: 'novel_generate_image',
         description:
-          '画图、改图和生成候选人设图。generate 的 characters 列出全部具名角色，空镜或路人用空数组。具名角色和 character_sheet 都需要 visual_type：realistic（真人）或 anime（动漫）。同一个角色可分别拥有两套定妆；只自动使用对应类型的定妆。该类型尚未定妆时，用 character_sheet 先生成三张候选，可直接根据文字生成，由作者选择。characters 查看定妆，presets 查看工作流，inspect 看图。收到 backgroundJobId 后先做独立工作或结束本轮，收到完成通知再用 job_output 取一次结果，无需轮询或重复提交。章节首版入书后再按判断重画，revises 填图集路径。',
+          '画图、改图和生成候选人设图。generate 的 characters 列出全部具名角色，空镜或路人用空数组。具名角色和 character_sheet 都需要 visual_type：realistic（真人）或 anime（动漫）。每种画风由作者独立定妆。需要单人参考时传入 shot，工具按镜头取用已标记的视图；省略 shot 使用完整定妆图。缺少视图时用 inspect 查看 chosen，再用 character_reference_views 标记清晰的正面全身和脸部近景，后续按镜头复用。缺少定妆时用 character_sheet 生成三张候选供作者选择。characters 查看定妆，presets 查看工作流。已排队或生成中时继续独立工作或结束本轮，等待通知后用 job_output 取结果，无需轮询或重新提交。章节首版入书后再重画，revises 填图集路径。',
         parameters: {
           type: 'object',
           properties: {
@@ -283,12 +293,13 @@ export function installComfyTools(
                 'status',
                 'characters',
                 'character_sheet',
+                'character_reference_views',
               ],
             },
             character: {
               type: 'string',
               maxLength: 80,
-              description: 'character_sheet 的一个角色姓名，优先使用书中固定叫法。',
+              description: 'character_sheet 或 character_reference_views 的角色姓名。',
             },
             new_variants: {
               type: 'boolean',
@@ -306,6 +317,27 @@ export function installComfyTools(
             revises: { type: 'string', description: '可选，本次重画对应的已有 illustrations/ 路径。' },
             preset: { type: 'string', maxLength: 40 },
             visual_type: { type: 'string', enum: characterVisualTypes },
+            shot: {
+              type: 'string',
+              enum: characterReferenceViews,
+              description: 'generate 镜头：全身或动作填 full_body；脸部或肩部特写填 close_up。',
+            },
+            views: {
+              type: 'object',
+              properties: Object.fromEntries(
+                characterReferenceViews.map((view) => [
+                  view,
+                  {
+                    type: 'array',
+                    minItems: 4,
+                    maxItems: 4,
+                    items: { type: 'integer', minimum: 0, maximum: 1000 },
+                    description: '当前定妆原图上的单人框 [左,上,右,下]，坐标为整张图的千分比。',
+                  },
+                ]),
+              ),
+              additionalProperties: false,
+            },
             seed: { type: 'integer', minimum: 0, maximum: 4294967295 },
             style: { type: 'string', maxLength: 1000 },
             composition: { type: 'string', maxLength: 1000 },
@@ -352,7 +384,7 @@ export function installComfyTools(
               type: 'string',
               maxLength: 256,
               description:
-                'generate 支持 chat:latest、对话图片 ID 或本书 illustrations/ 路径；inspect 用图集路径。',
+                'generate 支持 chat:latest、对话图片 ID 或本书 illustrations/ 路径。inspect 用图集路径，character_reference_views 必须填写当前定妆图路径。',
             },
             job_id: { type: 'string', description: 'status 使用本工具先前返回的任务 ID。' },
           },
@@ -363,11 +395,12 @@ export function installComfyTools(
           schema: { type: 'string' },
           render(args, value) {
             if (args.action !== 'inspect') return [{ type: 'text', text: value }];
-            const { attachment, label, chapterDelivery } = JSON.parse(value);
+            const { attachment, label, width, height, chapterDelivery } = JSON.parse(value);
+            const caption = width && height ? `${label}（${width} × ${height}）` : label;
             return [
               {
                 type: 'text',
-                text: chapterDelivery ? label + '\n' + JSON.stringify(chapterDelivery) : label,
+                text: chapterDelivery ? caption + '\n' + JSON.stringify(chapterDelivery) : caption,
               },
               { type: 'image', attachment },
             ];
@@ -388,13 +421,16 @@ export function installComfyTools(
                     ? '生成候选人设图'
                     : action === 'characters'
                       ? '查看已定妆角色'
-                      : action === 'status'
-                        ? '查询插图任务'
-                        : '生成插图',
+                      : action === 'character_reference_views'
+                        ? '保存定妆图参考范围'
+                        : action === 'status'
+                          ? '查询插图任务'
+                          : '生成插图',
         }),
         async execute(args, exec) {
           const { action, prompt, reference, job_id: id } = args;
           const sheet = action === 'character_sheet';
+          const marking = action === 'character_reference_views';
           const generation = sheet || action === 'generate';
           const references = () => chatImageReferences(sessionQuery, exec.agent.session.id, exec.signal);
           const service = makeDocumentService(fs, db, book);
@@ -406,22 +442,24 @@ export function installComfyTools(
                 ? ['action', 'job_id']
                 : action === 'inspect'
                   ? ['action', 'reference']
-                  : [
-                      'action',
-                      'prompt',
-                      'caption',
-                      ...(sheet ? ['character', 'new_variants'] : ['characters', 'revises']),
-                      'reference',
-                      'preset',
-                      'visual_type',
-                      'seed',
-                      'style',
-                      'composition',
-                      'atmosphere',
-                      'negative_prompt',
-                      'adjustments',
-                      'regions',
-                    ];
+                  : marking
+                    ? ['action', 'character', 'visual_type', 'reference', 'views']
+                    : [
+                        'action',
+                        'prompt',
+                        'caption',
+                        ...(sheet ? ['character', 'new_variants'] : ['characters', 'revises', 'shot']),
+                        'reference',
+                        'preset',
+                        'visual_type',
+                        'seed',
+                        'style',
+                        'composition',
+                        'atmosphere',
+                        'negative_prompt',
+                        'adjustments',
+                        'regions',
+                      ];
           if (
             ![
               'presets',
@@ -431,9 +469,13 @@ export function installComfyTools(
               'generate',
               'characters',
               'character_sheet',
+              'character_reference_views',
             ].includes(action) ||
             Object.keys(args).some((key) => !keys.includes(key)) ||
             (args.visual_type !== undefined && !characterVisualTypes.includes(args.visual_type)) ||
+            (args.shot !== undefined && !characterReferenceViews.includes(args.shot)) ||
+            (marking &&
+              (!characterVisualTypes.includes(args.visual_type) || typeof reference !== 'string')) ||
             (action === 'inspect' && typeof reference !== 'string') ||
             (args.revises !== undefined && !/^illustrations\/[a-f0-9]{64}\.json$/.test(args.revises)) ||
             (action === 'status'
@@ -444,6 +486,20 @@ export function installComfyTools(
           assertScope(exec);
           if (action === 'characters')
             return JSON.stringify({ bookId: book, characters: characterVisuals.list(book) });
+          if (marking) {
+            const character = visualCharacter(args.character, args.visual_type);
+            if (characterVisuals.get(book, character).chosen !== reference)
+              throw new Error('只能标记作者当前选定的人设图。');
+            const dimensions = service.run({ kind: 'illustrations', action: 'read', imagePath: reference });
+            const characterVisual = characterVisuals.saveReferenceViews(
+              book,
+              character,
+              reference,
+              args.views,
+              dimensions,
+            );
+            return JSON.stringify({ status: 'character-reference-saved', bookId: book, characterVisual });
+          }
           if (action === 'references') {
             const found = await references();
             assertScope(exec);
@@ -452,7 +508,7 @@ export function installComfyTools(
             });
           }
           if (action === 'inspect') {
-            const { data, label } = service.run({
+            const { data, label, width, height } = service.run({
               kind: 'illustrations',
               action: 'read',
               imagePath: reference,
@@ -467,6 +523,8 @@ export function installComfyTools(
             return JSON.stringify({
               attachment,
               label: label || '本书插图',
+              width,
+              height,
               ...(pending ? { chapterDelivery: pending } : {}),
             });
           }
@@ -502,12 +560,37 @@ export function installComfyTools(
                 characters: pending,
                 next: '为缺少候选的角色生成同一 visual_type 的候选，有候选的等作者定妆。正文可继续交付。',
               });
+            if (args.shot) {
+              const missing = cast.filter(({ referenceViews }) => !referenceViews?.[args.shot]);
+              if (missing.length)
+                return state('character-reference-views-needed', {
+                  shot: args.shot,
+                  characters: missing,
+                  next: '用 inspect 查看 chosen，再用 character_reference_views 标记单人视图，随后重试。',
+                });
+            }
           }
-          if (sheetCharacter && !args.new_variants) {
+          let checkedSheet;
+          const existingSheet = (pending, status) => JSON.stringify(jobResult(pending, status, {
+            progressCallId: pending.call_id,
+            next: '已提交同一角色的这类候选，请等待本批完成。',
+          }));
+          if (sheetCharacter) {
             const characterVisual = characterVisuals.get(book, sheetCharacter);
-            if (characterVisual.chosen) return state('character-locked', { characterVisual });
-            if (characterVisual.candidates.length >= 2)
-              return state('character-options', { characterVisual });
+            if (!args.new_variants) {
+              if (characterVisual.chosen) return state('character-locked', { characterVisual });
+              if (characterVisual.candidates.length >= 2) return state('character-options', { characterVisual });
+            }
+            checkedSheet = pendingSheet(book, sheetCharacter);
+            if (checkedSheet) {
+              const active = progress.read(book, checkedSheet.call_id);
+              if (active) return existingSheet(checkedSheet, active.stage === 'generating' ? 'generating' : 'queued');
+              const current = await reconcile(checkedSheet, { checkQueue: true });
+              assertScope(exec);
+              if (['queued', 'generating', 'retrying', 'unknown'].includes(current.status))
+                return existingSheet(checkedSheet, current.status);
+              if (current.status === 'character-options' && !args.new_variants) return JSON.stringify(current);
+            }
           }
           if (!row && action === 'generate' && (args.caption?.trim() || args.revises)) {
             const pending = await chapterDelivery();
@@ -583,7 +666,8 @@ export function installComfyTools(
           const base = new URL(config.base);
           const comfy = (route, options) => request(base, route, { ...options, signal: exec.signal });
           const jobs = backgroundJobs ?? exec.agent.ctx?.get('jobs');
-          const live = progress.begin(book, exec.callId);
+          const candidateCount = sheetCharacter ? characterSheetCount : 0;
+          const live = progress.begin(book, exec.callId, candidateCount);
           let watcher, handedOff = false;
           try {
             if (!row) {
@@ -592,6 +676,13 @@ export function installComfyTools(
               );
               if (reference) refs.reference = reference;
               if (config.requiresReference && !refs.reference) throw new Error('此编辑预设需要提供参考图。');
+              const referenceCrops = {};
+              const usedViews = cast.map(({ name, chosen, referenceViews }, index) => {
+                const shot = args.shot;
+                const box = shot && referenceViews?.[shot];
+                if (box) referenceCrops[identitySlots[index]] = box;
+                return { name, imagePath: chosen, ...(box ? { view: shot, box } : {}) };
+              });
               const assets = {};
               for (const [key, path] of Object.entries(refs)) {
                 if (!Object.hasOwn(config.bindings, key)) throw new Error('此工作流未配置参考图输入。');
@@ -614,6 +705,12 @@ export function installComfyTools(
                 assertScope(exec);
                 if (assets[key].data.length > maxImageBytes) throw new Error('ComfyUI 参考图超过 16 MiB。');
               }
+              const crops = Object.fromEntries(
+                Object.entries(referenceCrops).map(([key, box]) => [
+                  key,
+                  referenceViewCrop(box, assets[key]),
+                ]),
+              );
               const chosen = visualAdjustments(config, args.adjustments);
               const adjustments = sheetCharacter
                 ? { ...sheetCanvas(config, chosen), ...chosen }
@@ -660,7 +757,12 @@ export function installComfyTools(
                 if (Object.hasOwn(config.bindings, switchKey)) values[switchKey] = Boolean(assets[key]);
                 values[key] = assets[key] ? '' : (values[key] ?? config.template[node].inputs[input]);
               }
-              if (Object.keys(assets).length) bindWorkflow(config.template, config.bindings, values);
+              const graph = bindReferenceCrops(
+                bindWorkflow(config.template, config.bindings, values),
+                config.bindings,
+                crops,
+                Object.keys(assets),
+              );
               for (const [key, asset] of Object.entries(assets)) {
                 const form = new FormData();
                 form.set(
@@ -671,12 +773,22 @@ export function installComfyTools(
                 const uploaded = await comfy('upload/image', { form });
                 if (typeof uploaded.name !== 'string' || !uploaded.name)
                   throw new Error('ComfyUI 没有返回参考图回执。');
-                values[key] = uploaded.subfolder ? uploaded.subfolder + '/' + uploaded.name : uploaded.name;
+                const path = uploaded.subfolder ? uploaded.subfolder + '/' + uploaded.name : uploaded.name;
+                values[key] = path;
+                for (const [node, input] of config.bindings[key]) graph[node].inputs[input] = path;
               }
-              const graph = sheetCharacter
-                ? sheetGraph(config, values)
-                : bindWorkflow(config.template, config.bindings, values);
+              const promptGraph = sheetCharacter ? sheetGraph(config, values) : graph;
               assertScope(exec);
+              if (sheetCharacter) {
+                const pending = pendingSheet(book, sheetCharacter);
+                if (pending && pending.id !== checkedSheet?.id) return existingSheet(pending, 'queued');
+                // Another turn can finish its submission while this one prepares the graph.
+                if (!args.new_variants) {
+                  const latest = characterVisuals.get(book, sheetCharacter);
+                  if (latest.chosen) return state('character-locked', { characterVisual: latest });
+                  if (latest.candidates.length >= 2) return state('character-options', { characterVisual: latest });
+                }
+              }
               const job = randomUUID();
               db.run(
                 'INSERT INTO novel_comfy_jobs (id, book, call_id, revision, caption, recipe, connection) VALUES (?, ?, ?, ?, ?, ?, ?)',
@@ -689,9 +801,7 @@ export function installComfyTools(
                   preset: config.id,
                   seed,
                   ...(sheetCharacter ? { characterSheet: sheetCharacter } : {}),
-                  ...(cast.length
-                    ? { characterReferences: cast.map(({ name, chosen }) => ({ name, imagePath: chosen })) }
-                    : {}),
+                  ...(cast.length ? { characterReferences: usedViews } : {}),
                   ...(args.visual_type ? { visualType: args.visual_type } : {}),
                   ...(Object.keys(adjustments).length ? { adjustments } : {}),
                 }),
@@ -700,11 +810,11 @@ export function installComfyTools(
               row = find(book, job);
               // A lost POST response is ambiguous. Retain the receipt and never submit it twice.
               try {
-                watcher = await watchComfy(base, live, exec.signal);
+                watcher = await watchComfy(base, live, exec.signal, { candidateCount });
                 exec.signal.throwIfAborted();
                 const submitted = await comfy('prompt', {
                   data: {
-                    prompt: graph,
+                    prompt: promptGraph,
                     ...(watcher
                       ? { client_id: watcher.clientId, extra_data: { preview_method: 'latent2rgb' } }
                       : {}),

@@ -259,7 +259,7 @@ export function sheetGraph(config, values, count = characterSheetCount) {
 }
 
 export const characterSheetLayout =
-  'One character turnaround sheet on a plain neutral background. Left panel: clear face close-up. Right panels: full body front, profile and back, on the same floor line. All four panels depict the same person, outfit and colors. Make each full body view visible head to toe. No text or watermark.';
+  'Character reference sheet on a wide neutral canvas. One enlarged face portrait fills the left section, cropped at the shoulders. On its right, three full-body views stand side by side in one horizontal row: front, side profile, and back. Each full-body view reaches nearly the full canvas height, with feet aligned and small top and bottom margins. The portrait and turnaround fill the canvas with narrow gaps. Same character and outfit throughout. No inset grids, borders, or lettering.';
 
 export function identityBindings(preset, count, hasSceneReference) {
   const bindings = Array.from({ length: count }, (_, i) => 'characterReference' + (i + 1));

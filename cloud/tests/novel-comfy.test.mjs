@@ -603,6 +603,9 @@ test('book-scoped agent can submit, resume after reload, and publish a candidate
       character: '陆蘅',
       caption: '灯塔',
       prompt: '陆蘅，平刘海，白围巾。',
+      style: '细墨线和绢本设色',
+      composition: '把人物缩在右下角的远景',
+      atmosphere: '村落、陶窑和逆光',
       seed: 37,
     },
     'lu-sheet',
@@ -630,7 +633,14 @@ test('book-scoped agent can submit, resume after reload, and publish a candidate
   assert.equal(sheet.characterVisual.candidates.length, 3);
   assert.equal(sheet.characterVisual.chosen, null);
   assert.equal(rendered.at(-1)['2-6'].inputs.seed, 39);
-  assert.match(rendered.at(-1)['0-5'].inputs.text, /full body front, profile and back/);
+  const turnaroundPrompt = rendered.at(-1)['0-5'].inputs.text;
+  assert.match(turnaroundPrompt, /^陆蘅，平刘海，白围巾。/);
+  assert.match(turnaroundPrompt, /face portrait fills the left section/);
+  assert.match(turnaroundPrompt, /side by side in one horizontal row/);
+  assert.match(turnaroundPrompt, /front, side profile, and back/);
+  assert.match(turnaroundPrompt, /nearly the full canvas height/);
+  assert.match(turnaroundPrompt, /白围巾.*\nStyle：细墨线和绢本设色/s);
+  assert.doesNotMatch(turnaroundPrompt, /人物缩在右下角|村落、陶窑和逆光/);
   assert.equal((await call(drawing, 'still-needs-lock')).status, 'character-design-needed');
   const store = createCharacterVisuals(db);
   const chosen = sheet.characterVisual.candidates[0];

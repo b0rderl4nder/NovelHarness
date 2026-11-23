@@ -42,6 +42,13 @@ test('native activity does not turn disconnection, submit/stop errors or model f
   assert.equal(nativeActivity({ promptError: { op: 'stop' } }, terminal('aborted')).kind, 'stopped');
   assert.equal(nativeActivity({ promptError: { op: 'send' } }, terminal('aborted')).kind, 'error');
 });
+test('submission failure explains the error directly and omits raw request details', () => {
+  const text = (error) => nativeActivity({ promptError: { op: 'send', error } }, null).text;
+  assert.match(text({ code: 'session/writer-held' }), /另一个客户端.*session\/writer-held/);
+  assert.match(text({ code: 'session/attachment-invalid' }), /附件.*session\/attachment-invalid/);
+  assert.equal(text({ code: 'transport/timeout', message: 'private draft text' }), '提交失败 · 请求未确认（transport/timeout）');
+  assert.equal(text({ code: 'secret shown in a stack' }), '提交失败 · 未收到具体错误原因');
+});
 test('all native candidate tasks use the same scoped inspect/CAS-submit protocol', () => {
   const book = { root: '/workspace/novels/b-' + 'a'.repeat(32) };
   const proposal = {

@@ -2,6 +2,24 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { adaptNativeShell } from '../scripts/native-shell.mjs';
+import { checkPickedImages } from '../scripts/image-intake.mjs';
+
+test('image selection checks decoding and pixel limits before the attachment is accepted', async () => {
+  const header = new Uint8Array(24);
+  header.set([137, 80, 78, 71, 13, 10, 26, 10]);
+  new DataView(header.buffer).setUint32(16, 9000);
+  new DataView(header.buffer).setUint32(20, 1200);
+  const png = new File([header, new Uint8Array(900_000)], 'panorama.png', { type: 'image/png' });
+  const jpeg = new File([Uint8Array.of(255, 216, 255), new Uint8Array(120_000)], 'page.jpeg', { type: 'image/jpeg' });
+  const limits = { maxImageDimension: 8192, maxImagePixels: 64e6 };
+  let decoded = 0;
+  const measure = async () => { decoded++; return { width: 1200, height: 800 }; };
+  assert.equal(await checkPickedImages([jpeg], limits, measure), null);
+  assert.equal(await checkPickedImages([png], limits, measure), 'IMAGE_DIMENSION_TOO_LARGE');
+  assert.equal(decoded, 1);
+  assert.equal(await checkPickedImages([jpeg], limits, async () => { throw new Error('decode'); }), 'INVALID_IMAGE');
+  assert.equal(await checkPickedImages([new File([header], 'wrong.jpeg', { type: 'image/jpeg' })], limits, measure), 'IMAGE_TYPE_MISMATCH');
+});
 import { handleRequest } from '../pages/src/gateway.mjs';
 import { conversationTitle } from '../pages/public/novel-assets/conversation-title.mjs';
 import { runInNewContext } from 'node:vm';

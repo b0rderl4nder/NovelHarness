@@ -4,6 +4,7 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { TASK_LABELS, conversationTitle } from '../pages/public/novel-assets/conversation-title.mjs';
 import { drawerFocusables, focusNativeDrawer, handleNativeDrawerKey } from './drawer-presentation.mjs';
+import { checkPickedImages } from './image-intake.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const LICENSE = `/**
@@ -83,6 +84,51 @@ export function adaptNativeShell(kind, input) {
       '!open && onboardingStep !== void 0 && renderSlot("settings.onboarding",',
     );
   } else if (kind === 'conversation') {
+    source = once(source, 'const InputBar = (0, react.memo)(function InputBar(',
+      checkPickedImages.toString() + '\n\t\tconst InputBar = (0, react.memo)(function InputBar(');
+    source = once(source, 'const uploadsPending = attachments.some(', `const [imageNotice, setImageNotice] = (0, react.useState)(null);
+			const imageCheck = (0, react.useRef)(null);
+			(0, react.useEffect)(() => {
+				setImageNotice(null);
+				return () => { imageCheck.current = null; };
+			}, [sessionId]);
+			const uploadsPending = imageNotice?.busy === true || attachments.some(`);
+    source = once(source,
+      'return addFiles(files, directories);\n\t\t\t\t})();\n\t\t\t\tif (rejected !== null) showToast(rejected);',
+      `return null;
+				})();
+				if (imageCheck.current !== null) return;
+				if (rejected !== null) {
+					setImageNotice({ text: rejected });
+					return;
+				}
+				const images = files.filter((file) => !directories?.has(file) && isImageMediaType(file.type));
+				const add = () => {
+					const error = addFiles(files, directories);
+					setImageNotice(error == null ? null : { text: error });
+				};
+				if (!images.length) return add();
+				const check = Symbol();
+				imageCheck.current = check;
+				setImageNotice({ busy: true, text: t("image.novelChecking") });
+				void checkPickedImages(images, imageLimits).then((reason) => {
+					if (imageCheck.current !== check) return;
+					imageCheck.current = null;
+					if (reason) setImageNotice({ text: attachmentErrorText(t, reason, imageLimits) });
+					else if (!gate.current.locked && !gate.current.machineBusy) add();
+					else setImageNotice(null);
+				});`);
+    source = once(source, 'notice?.level === "info" && (0, react_jsx_runtime.jsx)("div", {',
+      `imageNotice && (0, react_jsx_runtime.jsx)("div", {
+						className: InputBar_module_css_default.notice,
+						role: imageNotice.busy ? "status" : "alert",
+						children: imageNotice.text
+					}),
+					notice?.level === "info" && (0, react_jsx_runtime.jsx)("div", {`);
+    for (const [language, label] of [['图片', '正在检查图片…'], ['Image', 'Checking images…']]) {
+      const start = '"image.dimensionTooLarge": "' + language;
+      source = once(source, start, '"image.novelChecking": ' + JSON.stringify(label) + ',\n\t\t\t' + start);
+    }
     source = once(
       source,
       '"data-testid": "todo-panel",',

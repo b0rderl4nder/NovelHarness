@@ -12,7 +12,7 @@ import Database from 'better-sqlite3';
 import { productionAuthority, productionCookies } from './production-wire.mjs';
 import { clientMediaFile } from './client-media.mjs';
 import {
-  compressibleAsset,
+  assetEncoding,
   assetDeliveryHeaders,
   streamBrowserBody,
   novelModulePreloads,
@@ -84,6 +84,7 @@ export async function startNovelWeb(
     { novelGateway },
     { fetchNovelDocument },
     { createReadSnapshots },
+    { makeDocumentService },
     { handleRequest },
   ] = await Promise.all([
     load('pin-gateway'),
@@ -91,6 +92,7 @@ export async function startNovelWeb(
     load('novel-gateway'),
     load('official-document-route'),
     load('read-snapshot'),
+    load('novel-documents'),
     import(pathToFileURL(join(base, 'page-gateway.mjs'))),
   ]);
   const db = new Database(join(home, 'web-pin.sqlite'));
@@ -323,11 +325,11 @@ export async function startNovelWeb(
     const preview = /^\/api\/novels\/(b-[a-f0-9]{32})\/image-preview\/([a-f0-9]{64})$/.exec(url.pathname);
     if ((gallery || preview) && request.method === 'GET') {
       const comfy = host.comfy;
-      if (!comfy) return json({ error: '此空间未配置 ComfyUI。' }, 404);
+      if (!preview && !comfy) return json({ error: '此空间未配置 ComfyUI。' }, 404);
       try {
         if (preview) {
           const [, bookId, digest] = preview;
-          const asset = comfy.characterBook(bookId).run({
+          const asset = makeDocumentService(app.storage.fs, app.storage.db, bookId).run({
             kind: 'illustrations', action: 'read', imagePath: 'illustrations/' + digest + '.json',
           });
           return new Response(Buffer.from(asset.data.split(',')[1], 'base64'), {
@@ -347,6 +349,7 @@ export async function startNovelWeb(
         service.run({ kind: 'identity' });
         return json(comfy.gallery(gallery, position, type === 'characters'));
       } catch (error) {
+        if (preview && error.code === 'ENOENT') return json({ error: '本书插图不存在。' }, 404);
         return json({ error: error.status ? error.message : '暂时无法读取图集。' }, error.status ?? 503);
       }
     }
@@ -711,8 +714,8 @@ export async function startNovelWeb(
         // as new requests. Disconnect the browser carrier, not its AI Agent.
         for (const socket of sockets) socket.destroy();
       }
-      const gzip = compressibleAsset(request, response);
-      for (const [key, value] of assetDeliveryHeaders(response.headers, gzip))
+      const encoding = assetEncoding(request, response);
+      for (const [key, value] of assetDeliveryHeaders(response.headers, encoding))
         if (!['set-cookie', 'transfer-encoding', 'connection'].includes(key)) res.setHeader(key, value);
       const cookies = response.headers.getSetCookie();
       if (cookies.length)
@@ -725,7 +728,7 @@ export async function startNovelWeb(
       if (staging) res.setHeader('x-novel-environment', 'lan-staging-independent-copy');
       if (production) res.setHeader('x-novel-host-runtime', 'official-v1');
       res.writeHead(response.status);
-      if (response.body && req.method !== 'HEAD') await streamBrowserBody(response, res, gzip);
+      if (response.body && req.method !== 'HEAD') await streamBrowserBody(response, res, encoding);
       else res.end();
     } catch {
       if (!res.headersSent)

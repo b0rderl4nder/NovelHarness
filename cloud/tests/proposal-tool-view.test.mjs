@@ -60,10 +60,11 @@ test('a generated thumbnail uses the stored asset and reports its intrinsic dime
   let ImageView;
   const bookId = 'b-' + 'a'.repeat(32);
   const cwd = '/workspace/novels/' + bookId;
-  const asset = { data: 'data:image/webp;base64,fixture', width: 1024, height: 640 };
+  const src = '/api/novels/' + bookId + '/image-preview/' + '1'.repeat(64);
+  let state = {};
   const React = {
     createElement: (type, props, ...children) => ({ type, props, children }),
-    useState: () => [{ asset }],
+    useState: () => [state, (next) => { state = next; }],
     useRef: () => ({ current: null }),
     useEffect: () => {},
     useSyncExternalStore: (_subscribe, snapshot) => snapshot(),
@@ -101,11 +102,20 @@ test('a generated thumbnail uses the stored asset and reports its intrinsic dime
   assert.equal(tool.children.length, 1);
   const candidate = tool.children.find((child) => typeof child?.type === 'function');
   const figure = candidate.type(candidate.props);
-  const [trigger, caption] = figure.children;
+  const [trigger] = figure.children;
   assert.equal(trigger.type, 'button');
   assert.equal(trigger.props['aria-label'], '放大插图：票务窗口');
-  assert.equal(trigger.children[0].props.src, asset.data);
+  const image = trigger.children[0];
+  assert.equal(image.props.src, src);
+  assert.equal(image.props.loading, 'lazy');
+  assert.equal(image.props.decoding, 'async');
+  assert.equal(trigger.props.disabled, true);
+  image.props.onLoad({ currentTarget: { naturalWidth: 1024, naturalHeight: 640 } });
+  const [loadedTrigger, caption] = candidate.type(candidate.props).children;
+  assert.equal(loadedTrigger.props.disabled, false);
   assert.deepEqual(caption.children, ['票务窗口 · 1024 × 640']);
+  image.props.onError();
+  assert.equal(candidate.type(candidate.props).props.role, 'status');
   assert.equal(
     ImageView({ toolName: 'novel_generate_image', block: { ...root, args: { text: () => 'inspect' } }, cwd }),
     null,

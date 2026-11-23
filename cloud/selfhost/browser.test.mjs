@@ -135,9 +135,11 @@ try {
   for (const [i, context] of [a, b].entries()) {
     const page = await context.newPage();
     const moduleMedia = [];
+    let startupBundle;
     let compressedModules = 0;
     page.on('response', (response) => {
-      if (new URL(response.url()).pathname === '/plugins/')
+      if (new URL(response.url()).pathname === '/plugins/') {
+        startupBundle ??= response.url();
         moduleMedia.push(
           response
             .text()
@@ -148,11 +150,8 @@ try {
             }))
             .catch(() => ({ failed: true })),
         );
-      if (
-        new URL(response.url()).pathname === '/plugins/' &&
-        response.headers()['content-encoding'] === 'gzip'
-      )
-        compressedModules++;
+        if (['gzip', 'br'].includes(response.headers()['content-encoding'])) compressedModules++;
+      }
     });
     page.setDefaultTimeout(30000);
     for (const name of ['继续', 'Continue', '稍后配置', 'Configure later'])
@@ -212,6 +211,12 @@ try {
       }
     }
     assert(compressedModules > 0, 'Native modules must use compressed delivery in the real browser.');
+    assert(startupBundle);
+    const brotliBundle = await context.request.get(startupBundle, { headers: { 'accept-encoding': 'br' } });
+    assert.equal(brotliBundle.status(), 200);
+    assert.equal(brotliBundle.headers()['content-encoding'], 'br');
+    assert((await brotliBundle.body()).length > 0);
+    await brotliBundle.dispose();
     const inspections = await Promise.all(moduleMedia);
     assert(
       inspections.every((item) => !item.failed),

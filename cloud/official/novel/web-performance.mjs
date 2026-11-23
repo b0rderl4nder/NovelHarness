@@ -26,6 +26,10 @@ export function assetEncoding(request, response) {
     )
   )
     return null;
+  return preferredAssetEncoding(request);
+}
+
+function preferredAssetEncoding(request) {
   const encodings = (request.headers.get('accept-encoding') ?? '').split(',').map((part) => {
     const [name, ...params] = part.trim().toLowerCase().split(';');
     const quality = params.find((p) => /^\s*q\s*=/.test(p));
@@ -39,6 +43,22 @@ export function assetEncoding(request, response) {
   const br = encodings.find(([name]) => name === 'br')?.[1] || 0;
   if (br > 0 && br >= gzip) return 'br';
   return gzip > 0 ? 'gzip' : null;
+}
+
+export function nativePluginEncoding(request) {
+  const url = new URL(request.url);
+  // The native carrier only negotiates gzip. For its versioned combo bundles,
+  // request unencoded bytes on loopback so the browser can receive Brotli.
+  if (
+    request.method === 'GET' &&
+    url.pathname === '/plugins/' &&
+    url.search.startsWith('??') &&
+    url.searchParams.has('rev') &&
+    !request.headers.has('range') &&
+    preferredAssetEncoding(request) === 'br'
+  )
+    return 'identity';
+  return null;
 }
 
 export function assetDeliveryHeaders(headers, encoding) {
@@ -56,7 +76,7 @@ export function assetDeliveryHeaders(headers, encoding) {
 export async function streamBrowserBody(response, destination, encoding = null) {
   const input = Readable.fromWeb(response.body);
   if (encoding === 'br')
-    await pipeline(input, createBrotliCompress({ params: { [constants.BROTLI_PARAM_QUALITY]: 4 } }), destination);
+    await pipeline(input, createBrotliCompress({ params: { [constants.BROTLI_PARAM_QUALITY]: 5 } }), destination);
   else if (encoding === 'gzip') await pipeline(input, createGzip({ level: 4 }), destination);
   else await pipeline(input, destination);
 }

@@ -15,6 +15,7 @@ import {
   assetEncoding,
   assetDeliveryHeaders,
   streamBrowserBody,
+  nativePluginEncoding,
   novelModulePreloads,
   invalidatesNativeTransports,
 } from './web-performance.mjs';
@@ -500,6 +501,7 @@ export async function startNovelWeb(
     }
     // Static assets and original streaming HTTP RPC are forwarded without a
     // bearer key in browser scripts, buffering the stream, or a new Agent loop.
+    const upstreamEncoding = url.pathname === '/' ? 'identity' : nativePluginEncoding(request);
     return new Promise((resolveResponse, reject) => {
       const outgoing = httpRequest(
         {
@@ -509,7 +511,7 @@ export async function startNovelWeb(
           method: request.method,
           headers: {
             ...nativeHeaders(request),
-            ...(url.pathname === '/' ? { 'accept-encoding': 'identity' } : {}),
+            ...(upstreamEncoding ? { 'accept-encoding': upstreamEncoding } : {}),
           },
           signal: request.signal,
         },

@@ -312,7 +312,11 @@ export function installComfyTools(
               uniqueItems: true,
               description: 'generate 必填，画面中所有具名人物的姓名，非人物图用 []。',
             },
-            prompt: { type: 'string', maxLength: 12000 },
+            prompt: {
+              type: 'string',
+              maxLength: 12000,
+              description: 'character_sheet 只写角色外貌、体型、服装和辨识细节，直接从角色资料提取，避免复用含场景、动作或镜头的插画提示。四视图由工具排版。',
+            },
             caption: { type: 'string', maxLength: 160 },
             revises: { type: 'string', description: '可选，本次重画对应的已有 illustrations/ 路径。' },
             preset: { type: 'string', maxLength: 40 },
@@ -339,10 +343,18 @@ export function installComfyTools(
               additionalProperties: false,
             },
             seed: { type: 'integer', minimum: 0, maximum: 4294967295 },
-            style: { type: 'string', maxLength: 1000 },
-            composition: { type: 'string', maxLength: 1000 },
-            atmosphere: { type: 'string', maxLength: 1000 },
-            negative_prompt: { type: 'string', maxLength: 4000 },
+            style: {
+              type: 'string',
+              maxLength: 1000,
+              description: '定妆画风可描述线条、上色和材质，布局由工具负责。',
+            },
+            composition: { type: 'string', maxLength: 1000, description: '场景插图的布局。定妆使用固定四视图。' },
+            atmosphere: { type: 'string', maxLength: 1000, description: '场景插图的光线与氛围。定妆使用素底。' },
+            negative_prompt: {
+              type: 'string',
+              maxLength: 4000,
+              description: '定妆图应画出同一角色的多个视角，避免在负向提示词里排斥多视图。',
+            },
             adjustments: {
               type: 'array',
               maxItems: 16,
@@ -726,7 +738,7 @@ export function installComfyTools(
                 prompt: compileVisualPrompt(
                   config,
                   sheetCharacter
-                    ? { ...args, prompt: characterSheetLayout + '\n\n' + prompt }
+                    ? { prompt: prompt.trim() + '\n\n' + characterSheetLayout, style: args.style }
                     : { ...args, style },
                   adjustments,
                 ),

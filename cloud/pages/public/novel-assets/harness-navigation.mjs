@@ -1,5 +1,8 @@
 // Settings own their renderer/store. Use the native shell's section callback;
 // do not rehost model forms, inspect the DOM or submit model requests.
+import { createComfySettingsPanel } from './comfy-settings.mjs';
+
+const illustrationSection = 'novel-illustrations';
 
 export function installNavigation(
   ctx,
@@ -12,6 +15,7 @@ export function installNavigation(
   } = {},
 ) {
   const h = React.createElement;
+  const IllustrationSettings = createComfySettingsPanel(React);
   const icon = (kind) =>
     h(
       'svg',
@@ -75,10 +79,15 @@ export function installNavigation(
   }
   function SettingsLauncher({ wide, settingsOpen, openSettings, openSettingsSection, settingsShortcut }) {
     const initial = React.useRef(false);
-    React.useEffect(() => navigation?.bindModels(() => openSettingsSection('models')), [openSettingsSection]);
+    React.useEffect(
+      () => navigation?.bindModels((section = 'models') => openSettingsSection(section)),
+      [openSettingsSection],
+    );
     React.useEffect(() => {
       if (initial.current) return;
-      if (new URL(url).searchParams.get('settings') !== 'models') return;
+      const requested = new URL(url).searchParams.get('settings');
+      const section = requested === 'illustrations' ? illustrationSection : requested === 'models' ? 'models' : null;
+      if (!section) return;
       initial.current = 'pending';
       const activate = () => {
         if (initial.current !== 'pending') return;
@@ -86,11 +95,11 @@ export function installNavigation(
         // Consume only our query on the CURRENT address. Startup or the author
         // may already have selected a main view while catalogs were loading.
         const next = new URL(globalThis.location?.href ?? url);
-        if (next.searchParams.get('settings') === 'models') {
+        if (next.searchParams.get('settings') === requested) {
           next.searchParams.delete('settings');
           replaceUrl(next);
         }
-        openSettingsSection('models');
+        openSettingsSection(section);
       };
       if (ready)
         ready.then(activate, () => {}); // bridge owns startup errors
@@ -138,6 +147,9 @@ export function installNavigation(
   }
   ctx.slots.inject('settings.launcher', () =>
     ctx.slots.register({ name: 'settings.launcher' }, SettingsLauncher),
+  );
+  ctx.slots.inject('settings.section', () =>
+    ctx.slots.register({ name: 'settings.section', id: illustrationSection, label: () => '插图生成', order: 5 }, IllustrationSettings),
   );
   if (!navigation)
     ctx.slots.inject('sidebar.footer.action', () =>

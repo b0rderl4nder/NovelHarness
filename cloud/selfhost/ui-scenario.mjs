@@ -274,6 +274,8 @@ export async function verifyWritingUi({ page, context, origin, book, prose }) {
   await page.getByRole('button', { name: '返回书稿', exact: true }).click();
   await clickSidebarEntry(page, 'button', '设置');
   const settings = page.getByRole('dialog', { name: '设置', exact: true });
+  await settings.getByRole('button', { name: '插图生成', exact: true }).click();
+  await expect(settings.getByText('此部署未配置 ComfyUI。', { exact: true })).toBeVisible();
   await settings.getByRole('button', { name: '通用设置', exact: true }).click();
   await settings.getByRole('button', { name: '浅色', exact: true }).click();
   await expect.poll(palette).toBe('#ebedef');

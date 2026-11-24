@@ -8,6 +8,7 @@ import { compileVisualPrompt, referenceCanvas, regionLabels, visualAdjustments }
 import { chatImageReferences, loadChatImage } from './comfy-chat-images.mjs';
 import { chapterDeliveryFor } from './comfy-chapter-delivery.mjs';
 import { createComfySettings } from './comfy-settings.mjs';
+import { bindMossLoras, mossLoraPrompt } from './comfy-loras.mjs';
 import { createComfyProgress, watchComfy } from './comfy-progress.mjs';
 import {
   bindReferenceCrops,
@@ -662,6 +663,10 @@ export function installComfyTools(
             return JSON.stringify({
               defaultPreset: available.defaultPreset,
               defaultReferencePreset: available.defaultReferencePreset,
+              selectedLoras: available.selectedLoras.map((id) => {
+                const { label, trigger } = available.loras.get(id);
+                return { id, label, trigger };
+              }),
               presets: [...available.presets.values()].map((preset) => ({
                 id: preset.id,
                 label: preset.label,
@@ -672,6 +677,7 @@ export function installComfyTools(
                 negativePrompt: Object.hasOwn(preset.bindings, 'negativePrompt'),
                 characterSlots: [1, 2, 3, 4].filter((n) => identityBindings(preset, n, false)).length,
                 controls: preset.controls,
+                supportsMossLoras: preset.supportsMossLoras,
                 ...(preset.guidance ? { guidance: preset.guidance } : {}),
               })),
             });
@@ -718,6 +724,9 @@ export function installComfyTools(
               });
           }
           const base = new URL(config.base);
+          const loras = !row && config.supportsMossLoras
+            ? available.selectedLoras.map((id) => available.loras.get(id))
+            : [];
           const comfy = (route, options) => request(base, route, { ...options, signal: exec.signal });
           const jobs = backgroundJobs ?? exec.agent.ctx?.get('jobs');
           const candidateCount = sheetCharacter ? characterSheetCount : 0;
@@ -766,7 +775,7 @@ export function installComfyTools(
                   referenceViewCrop(box, assets[key]),
                 ]),
               );
-              const chosen = visualAdjustments(config, args.adjustments);
+              const chosen = { ...config.dimensions, ...visualAdjustments(config, args.adjustments) };
               const adjustments = sheetCharacter
                 ? { ...sheetCanvas(config, chosen), ...chosen }
                 : reference
@@ -781,8 +790,8 @@ export function installComfyTools(
                 prompt: compileVisualPrompt(
                   config,
                   sheetCharacter
-                    ? { prompt: prompt.trim() + '\n\n' + characterSheetLayout, style: args.style }
-                    : { ...args, style },
+                    ? { prompt: mossLoraPrompt(prompt.trim(), loras) + '\n\n' + characterSheetLayout, style: args.style }
+                    : { ...args, prompt: mossLoraPrompt(prompt, loras), style },
                   adjustments,
                 ),
               };
@@ -832,7 +841,7 @@ export function installComfyTools(
                 values[key] = path;
                 for (const [node, input] of config.bindings[key]) graph[node].inputs[input] = path;
               }
-              const promptGraph = sheetCharacter ? sheetGraph(config, values) : graph;
+              const promptGraph = bindMossLoras(sheetCharacter ? sheetGraph(config, values) : graph, loras);
               assertScope(exec);
               if (sheetCharacter) {
                 const pending = pendingSheet(book, sheetCharacter);
@@ -858,6 +867,7 @@ export function installComfyTools(
                   ...(sheetCharacter ? { characterSheet: sheetCharacter } : {}),
                   ...(cast.length ? { characterReferences: usedViews } : {}),
                   ...(args.visual_type ? { visualType: args.visual_type } : {}),
+                  ...(loras.length ? { loras: loras.map(({ id, strength }) => ({ id, strength })) } : {}),
                   ...(Object.keys(adjustments).length ? { adjustments } : {}),
                 }),
                 JSON.stringify({ base: base.href, ffmpeg: config.ffmpeg }),

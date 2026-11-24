@@ -33,6 +33,11 @@ export function createComfySettings(db, path) {
     )
       throw invalid('默认生图预设无效，参考图预设需要支持图像输入。');
     const values = changes.values ?? {};
+    const selectedLoras = changes.selectedLoras ?? [];
+    if (!Array.isArray(selectedLoras) ||
+        new Set(selectedLoras).size !== selectedLoras.length ||
+        selectedLoras.some((id) => !original.loras.has(id)))
+      throw invalid('请选择已登记的 MOSS LoRA。');
     if (!presetsObject(values) || Object.keys(values).some((id) => !original.presets.has(id)))
       throw invalid('预设参数无效。');
     const presets = new Map();
@@ -56,13 +61,16 @@ export function createComfySettings(db, path) {
         ...preset,
         base,
         controls,
+        dimensions: Object.fromEntries(
+          Object.entries(selected).filter(([key]) => key === 'width' || key === 'height'),
+        ),
         revision:
           base.href === first.href && !options.length
             ? preset.revision
             : hash([preset.revision, base.href, controls]),
       });
     }
-    return { base, defaultPreset, defaultReferencePreset, presets };
+    return { base, defaultPreset, defaultReferencePreset, presets, loras: original.loras, selectedLoras };
   }
 
   async function load() {
@@ -85,11 +93,12 @@ export function createComfySettings(db, path) {
         raw,
         originalConfig.endpoints,
         ...Array.from(originalConfig.presets.values(), ({ revision }) => revision),
+        [...originalConfig.loras.values()],
       ]),
     });
   }
 
-  function view({ revision, base, endpoints, presets, defaultPreset, defaultReferencePreset, notice }) {
+  function view({ revision, base, endpoints, presets, defaultPreset, defaultReferencePreset, notice, loras, selectedLoras }) {
     return {
       supported: true,
       revision,
@@ -98,6 +107,8 @@ export function createComfySettings(db, path) {
       defaultPreset,
       defaultReferencePreset,
       notice,
+      loras: [...loras.values()].map(({ id, label, trigger }) => ({ id, label, trigger })),
+      selectedLoras,
       presets: [...presets.values()].map(({ id, label, bindings, controls }) => ({
         id,
         label,
@@ -130,6 +141,7 @@ export function createComfySettings(db, path) {
         defaultPreset: input.defaultPreset,
         defaultReferencePreset: input.defaultReferencePreset,
         values: input.values,
+        selectedLoras: input.selectedLoras === undefined ? current.selectedLoras : input.selectedLoras,
       };
       try {
         apply(base, changes);

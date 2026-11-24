@@ -15,6 +15,7 @@ import { installComfyTools } from '../official/novel/comfy-tools.mjs';
 import { installNovelTools } from '../worker/novel-tools.mjs';
 import { compileVisualPrompt, loadComfyPresets, referenceCanvas } from '../official/novel/comfy-presets.mjs';
 import { createComfySettings } from '../official/novel/comfy-settings.mjs';
+import { bindMossLoras, mossLoraPrompt, readMossLoras } from '../official/novel/comfy-loras.mjs';
 import { createComfyProgress, watchComfy } from '../official/novel/comfy-progress.mjs';
 import {
   createCharacterVisuals,
@@ -158,18 +159,46 @@ test('ComfyUI settings validate host endpoints, numeric controls and concurrent 
       workflow: 'workflow.json',
       bindings: { prompt: bindings.script, width: [['6', 'width']] },
       controls: { width: { min: 512, max: 1600, step: 16 } },
+      loras: { example: { label: 'Example LoRA', file: 'example.safetensors', trigger: 'example-trigger' } },
     }),
   );
   const settings = createComfySettings(db, file);
   const initial = await settings.read();
+  assert.deepEqual(initial.selectedLoras, []);
   const input = { ...initial, comfy: initial.endpoints[1], values: { default: { width: 1152 } } };
   await assert.rejects(settings.save({ ...input, comfy: 'http://127.0.0.1:80' }), /主机已登记/);
   await assert.rejects(settings.save({ ...input, values: { default: { width: 1153 } } }), /超出/);
-  const saved = await settings.save(input);
+  await assert.rejects(settings.save({ ...input, selectedLoras: ['unknown'] }), /已登记/);
+  const saved = await settings.save({ ...input, selectedLoras: ['example'] });
   assert.equal(saved.presets[0].controls.width.default, 1152);
   assert.equal(saved.comfy, 'http://127.0.0.1:8288/');
   await assert.rejects(settings.save(input), { status: 409 });
   assert.deepEqual(await createComfySettings(db, file).read(), saved);
+  assert.deepEqual((await settings.save({ ...input, revision: saved.revision, selectedLoras: undefined })).selectedLoras, ['example']);
+});
+
+test('selected MOSS LoRAs extend the model chain without changing other models', () => {
+  const loras = [...readMossLoras({
+    quality: { label: 'Quality', file: 'quality.safetensors', trigger: 'masterpiece, very aesthetic' },
+    pose: { label: 'Pose', file: 'pose.safetensors', trigger: 'mouse_on_ship_hanging' },
+  }).values()];
+  const graph = {
+    1: { class_type: 'UNETLoader', inputs: { unet_name: 'moss_image_sft.safetensors' } },
+    2: { class_type: 'LoraLoaderModelOnly', inputs: { model: ['1', 0], lora_name: 'existing.safetensors' } },
+    3: { class_type: 'MossCandidatePrompt', inputs: { model: ['2', 0], reference: ['4', 0] } },
+    4: { class_type: 'LoadImage', inputs: { image: 'reference.webp' } },
+    5: { class_type: 'UNETLoader', inputs: { unet_name: 'anima.safetensors' } },
+    6: { class_type: 'KSampler', inputs: { model: ['5', 0] } },
+  };
+  const original = structuredClone(graph);
+  assert.deepEqual(bindMossLoras(graph, []), original);
+  bindMossLoras(graph, loras);
+  assert.deepEqual(graph['novel-lora-3-quality'].inputs.model, ['2', 0]);
+  assert.deepEqual(graph['novel-lora-3-pose'].inputs.model, ['novel-lora-3-quality', 0]);
+  assert.deepEqual(graph['3'].inputs.model, ['novel-lora-3-pose', 0]);
+  assert.deepEqual(graph['3'].inputs.reference, ['4', 0]);
+  assert.deepEqual(graph['6'], original['6']);
+  assert.equal(mossLoraPrompt('scene', loras), 'masterpiece, very aesthetic, mouse_on_ship_hanging, scene');
 });
 
 test('ComfyUI forwards the matching sampler progress and short-lived preview', async (t) => {

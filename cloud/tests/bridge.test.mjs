@@ -245,8 +245,11 @@ test('navigation uses native settings callbacks and keeps compact controls label
   });
   assert.deepEqual(
     registrations.map(({ options }) => options.name),
-    ['settings.launcher', 'sidebar.footer.action'],
+    ['settings.launcher', 'settings.section', 'sidebar.footer.action'],
   );
+  const section = registrations.find(({ options }) => options.name === 'settings.section');
+  assert.equal(section.options.id, 'novel-illustrations');
+  assert.equal(section.options.label(), '插图生成');
   const library = registrations
     .find(({ options }) => options.name === 'sidebar.footer.action')
     .component({ wide: false });
@@ -334,8 +337,8 @@ test('application model actions delegate to the original section callback and re
     {
       slots: {
         inject: (_name, fn) => fn(),
-        register: (_options, component) => {
-          Component = component;
+        register: ({ name }, component) => {
+          if (name === 'settings.launcher') Component = component;
         },
       },
     },
@@ -362,7 +365,8 @@ test('application model actions delegate to the original section callback and re
   Component({ openSettingsSection: (section) => selected.push(section) });
   assert.deepEqual(selected, []);
   bound();
-  assert.deepEqual(selected, ['models']);
+  bound('novel-illustrations');
+  assert.deepEqual(selected, ['models', 'novel-illustrations']);
   release();
   assert.equal(bound, undefined);
 });

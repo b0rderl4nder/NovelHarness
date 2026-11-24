@@ -255,12 +255,12 @@ export function createComfySettingsPanel(React) {
         });
       return () => owner.abort();
     }, []);
-    if (!config?.supported && !error) return null;
     return h(
-      'details',
-      { className: 'novel-access-details novel-comfy-settings' },
-      h('summary', null, '插图生成 · ComfyUI'),
-      config?.supported ? h(Form, { config }) : h('p', { role: 'status' }, error),
+      'section',
+      { className: 'novel-comfy-settings', 'aria-label': '插图生成设置' },
+      config?.supported
+        ? h(Form, { config })
+        : h('p', { role: 'status' }, error || (config ? '此部署未配置 ComfyUI。' : '正在读取生图设置…')),
     );
   };
 }

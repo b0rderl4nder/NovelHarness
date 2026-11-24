@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { endpoint } from '../../shared/comfy-render.mjs';
+import { readMossLoras, supportsMossLoras } from './comfy-loras.mjs';
 
 export const regionLabels = ['character', 'object', 'text'];
 const presetId = /^[a-z][a-z0-9-]{0,39}$/;
@@ -152,6 +153,7 @@ export async function loadComfyPresets(path) {
             guidance: guidance.trim(),
             controls,
             requiresReference,
+            supportsMossLoras: supportsMossLoras(template),
             revision,
             ffmpeg: entry.ffmpeg ?? config.ffmpeg ?? 'ffmpeg',
           },
@@ -168,7 +170,7 @@ export async function loadComfyPresets(path) {
         [...presets.keys()].find(supportsReference)));
   if (defaultReferencePreset !== undefined && !supportsReference(defaultReferencePreset))
     throw new Error('ComfyUI 默认参考图预设未绑定 reference。');
-  return { defaultPreset, defaultReferencePreset, presets, endpoints };
+  return { defaultPreset, defaultReferencePreset, presets, endpoints, loras: readMossLoras(config.loras) };
 }
 
 export function compileVisualPrompt(preset, args, adjustments = {}) {

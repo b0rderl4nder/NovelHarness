@@ -1753,7 +1753,7 @@ body:has(.novel-desk[data-assistant='closed']) [data-testid='dsh-purge-launch'] 
   gap: 0.3rem;
   min-width: 0;
 }
-.novel-comfy-settings input,
+.novel-comfy-settings input[type='number'],
 .novel-comfy-settings select {
   width: 100%;
   min-width: 0;
@@ -1764,6 +1764,34 @@ body:has(.novel-desk[data-assistant='closed']) [data-testid='dsh-purge-launch'] 
   color: inherit;
   font: inherit;
   padding: 0.45rem 0.6rem;
+}
+.novel-comfy-loras,
+.novel-comfy-params {
+  display: grid;
+  gap: 0.6rem;
+  min-width: 0;
+  padding: 0.75rem 0;
+  border-top: 1px solid var(--studio-line);
+}
+.novel-comfy-group-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.6rem;
+}
+.novel-comfy-settings .novel-comfy-lora {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  min-height: 2.75rem;
+  padding: 0.35rem 0.6rem;
+  border: 1px solid var(--studio-line);
+  border-radius: 0.4rem;
+  overflow-wrap: anywhere;
+}
+.novel-comfy-lora input {
+  flex: none;
+  margin: 0;
 }
 .novel-comfy-controls summary {
   cursor: pointer;

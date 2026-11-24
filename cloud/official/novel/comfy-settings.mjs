@@ -61,6 +61,9 @@ export function createComfySettings(db, path) {
         ...preset,
         base,
         controls,
+        dimensions: Object.fromEntries(
+          Object.entries(selected).filter(([key]) => key === 'width' || key === 'height'),
+        ),
         revision:
           base.href === first.href && !options.length
             ? preset.revision

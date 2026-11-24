@@ -775,7 +775,7 @@ export function installComfyTools(
                   referenceViewCrop(box, assets[key]),
                 ]),
               );
-              const chosen = visualAdjustments(config, args.adjustments);
+              const chosen = { ...config.dimensions, ...visualAdjustments(config, args.adjustments) };
               const adjustments = sheetCharacter
                 ? { ...sheetCanvas(config, chosen), ...chosen }
                 : reference

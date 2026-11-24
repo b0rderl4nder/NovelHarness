@@ -9,7 +9,22 @@ const labels = {
   shift: '偏移',
   megapixels: '像素规模',
   seed: '种子',
+  lora_strength: '预设 LoRA 强度',
 };
+const commonKeys = ['width', 'height', 'steps', 'cfg', 'sampler', 'scheduler', 'denoise'];
+const canvases = [
+  ['方形 1:1', 1024, 1024],
+  ['竖幅 3:4', 768, 1024],
+  ['横幅 4:3', 1024, 768],
+  ['宽幅 16:9', 1024, 576],
+];
+const fits = (rule, value) =>
+  rule &&
+  !rule.choices &&
+  value >= rule.min &&
+  value <= rule.max &&
+  (!rule.step ||
+    Math.abs((value - rule.min) / rule.step - Math.round((value - rule.min) / rule.step)) < 1e-7);
 
 async function ask(route, method, body, signal) {
   const response = await fetch('/api/comfy/' + route, {
@@ -32,14 +47,16 @@ export function createComfySettingsPanel(React) {
     const [reference, setReference] = React.useState(config.defaultReferencePreset);
     const [editing, setEditing] = React.useState(config.defaultPreset);
     const [values, setValues] = React.useState({});
+    const [selectedLoras, setSelectedLoras] = React.useState(config.selectedLoras ?? []);
     const [revision, setRevision] = React.useState(config.revision);
     const [busy, setBusy] = React.useState('');
     const [message, setMessage] = React.useState(config.notice ?? '');
     const preset = config.presets.find(({ id }) => id === editing);
     const referencePresets = config.presets.filter((item) => item.reference);
     const currentValue = (id, key, rule) => values[id]?.[key] ?? rule.default;
-    const editValue = (key, value) =>
-      setValues({ ...values, [editing]: { ...values[editing], [key]: value } });
+    const editValues = (patch) =>
+      setValues((current) => ({ ...current, [editing]: { ...current[editing], ...patch } }));
+    const editValue = (key, value) => editValues({ [key]: value });
     async function action(kind) {
       if (busy) return;
       setBusy(kind);
@@ -66,6 +83,7 @@ export function createComfySettingsPanel(React) {
             defaultPreset,
             defaultReferencePreset: reference,
             values: defaults,
+            selectedLoras,
             revision,
           });
           setRevision(result.revision);
@@ -81,6 +99,32 @@ export function createComfySettingsPanel(React) {
     const field = (label, input, key = label) => h('label', { key }, h('span', null, label), input);
     const select = (value, update, options) =>
       h('select', { value, onChange: (event) => update(event.target.value) }, ...options);
+    const control = (key, rule) =>
+      field(
+        labels[key] ?? key,
+        rule.choices
+          ? select(
+              currentValue(editing, key, rule),
+              (value) => editValue(key, value),
+              rule.choices.map((value) => h('option', { key: value, value }, value)),
+            )
+          : h('input', {
+              type: 'number',
+              inputMode: 'decimal',
+              required: true,
+              min: rule.min,
+              max: rule.max,
+              step: rule.step ?? 'any',
+              value: currentValue(editing, key, rule),
+              onChange: (event) => editValue(key, event.target.value),
+            }),
+        key,
+      );
+    const common = commonKeys.filter((key) => Object.hasOwn(preset.controls, key));
+    const advanced = Object.entries(preset.controls).filter(([key]) => !commonKeys.includes(key));
+    const sizes = canvases.filter(
+      ([, w, t]) => fits(preset.controls.width, w) && fits(preset.controls.height, t),
+    );
     return h(
       'form',
       {
@@ -107,37 +151,78 @@ export function createComfySettingsPanel(React) {
         referencePresets.length
           ? field('默认参考图预设', select(reference, setReference, presetOptions(referencePresets)))
           : null,
+        config.loras?.length
+          ? h(
+              'section',
+              { className: 'novel-comfy-loras', 'aria-label': 'LoRA' },
+              h(
+                'div',
+                { className: 'novel-comfy-group-heading' },
+                h('strong', null, 'LoRA'),
+                h('output', null, selectedLoras.length + ' 项已选'),
+              ),
+              ...config.loras.map(({ id, label }) =>
+                h(
+                  'label',
+                  { key: id, className: 'novel-comfy-lora' },
+                  h('input', {
+                    type: 'checkbox',
+                    checked: selectedLoras.includes(id),
+                    onChange: (event) => {
+                      const checked = event.target.checked;
+                      setSelectedLoras((current) =>
+                        checked ? [...current, id] : current.filter((key) => key !== id),
+                      );
+                    },
+                  }),
+                  h('span', null, label),
+                ),
+              ),
+              h('p', { className: 'novel-app-hint' }, '适用于 MOSS 工作流。保存后用于新生图任务。'),
+            )
+          : null,
         h(
-          'details',
-          { className: 'novel-comfy-controls' },
-          h('summary', null, '工作流参数'),
+          'section',
+          { className: 'novel-comfy-params', 'aria-label': '工作流参数' },
+          h('strong', null, '工作流参数'),
           field('编辑预设', select(editing, setEditing, presetOptions(config.presets))),
+          sizes.length
+            ? h(
+                'div',
+                { className: 'novel-comfy-actions', role: 'group', 'aria-label': '常用画幅' },
+                ...sizes.map(([label, width, height]) =>
+                  h(
+                    'button',
+                    {
+                      key: label,
+                      type: 'button',
+                      'aria-pressed':
+                        Number(currentValue(editing, 'width', preset.controls.width)) === width &&
+                        Number(currentValue(editing, 'height', preset.controls.height)) === height,
+                      onClick: () => editValues({ width, height }),
+                    },
+                    label,
+                  ),
+                ),
+              )
+            : null,
           h(
             'div',
             { className: 'novel-comfy-fields' },
-            ...Object.entries(preset.controls).map(([key, rule]) =>
-              field(
-                labels[key] ?? key,
-                rule.choices
-                  ? select(
-                      currentValue(editing, key, rule),
-                      (value) => editValue(key, value),
-                      rule.choices.map((value) => h('option', { key: value, value }, value)),
-                    )
-                  : h('input', {
-                      type: 'number',
-                      inputMode: 'decimal',
-                      required: true,
-                      min: rule.min,
-                      max: rule.max,
-                      step: rule.step ?? 'any',
-                      value: currentValue(editing, key, rule),
-                      onChange: (event) => editValue(key, event.target.value),
-                    }),
-                key,
-              ),
-            ),
+            ...common.map((key) => control(key, preset.controls[key])),
           ),
+          advanced.length
+            ? h(
+                'details',
+                { className: 'novel-comfy-controls' },
+                h('summary', null, '高级参数'),
+                h(
+                  'div',
+                  { className: 'novel-comfy-fields' },
+                  ...advanced.map(([key, rule]) => control(key, rule)),
+                ),
+              )
+            : null,
           !Object.keys(preset.controls).length
             ? h('p', { className: 'novel-app-hint' }, '这个预设使用工作流的默认参数。')
             : null,

@@ -1755,6 +1755,7 @@ body:has(.novel-desk[data-assistant='closed']) [data-testid='dsh-purge-launch'] 
 }
 .novel-comfy-settings input[type='number'],
 .novel-comfy-settings select {
+  box-sizing: border-box;
   width: 100%;
   min-width: 0;
   min-height: 2.5rem;
